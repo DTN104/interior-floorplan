@@ -13,6 +13,7 @@ const Scene = React.lazy(() =>
 );
 
 import { Plan } from "./Plan";
+import type { EdgeDragPhase } from "./Plan";
 import {
   Project,
   Furniture,
@@ -107,10 +108,20 @@ function shiftedOpenings(result: ResizeResult) {
   return result.openings
     .map(
       (o) =>
-        `${openingName(o.id)} ${o.shift > 0 ? "+" : "−"}${Math.abs(o.shift)} mm`,
+        openingName(o.id) +
+        (o.shift ? ` ${o.shift > 0 ? "+" : "−"}${Math.abs(o.shift)} mm` : "") +
+        (o.narrowed ? ` (hẹp lại ${o.narrowed} mm)` : ""),
     )
     .join(" · ");
 }
+type EdgeDrag = {
+  roomId: string;
+  index: number;
+  delta: number;
+  /** Last accepted result while dragging; kept when the pointer goes past what the plan allows. */
+  result: ResizeResult | null;
+  error: string;
+};
 function App() {
   const [boot] = useState(() => loadProject()),
     [history, setHistory] = useState(() => ({
@@ -129,6 +140,8 @@ function App() {
       size: number;
     } | null>(null),
     [transient, setTransient] = useState<Project | null>(null),
+    [edgeDrag, setEdgeDrag] = useState<EdgeDrag | null>(null),
+    [lastChange, setLastChange] = useState(""),
     [dragKey, setDragKey] = useState(0),
     [selected, setSelected] = useState<string | null>("master"),
     [kind, setKind] = useState<"room" | "furniture">("room"),
@@ -154,16 +167,23 @@ function App() {
     pngRef.current = fn;
   }, []);
   const p = history.present,
-    display = preview?.project ?? transient ?? p,
+    live = edgeDrag?.result ?? preview,
+    display = edgeDrag?.result?.project ?? preview?.project ?? transient ?? p,
     svgRef = useRef<SVGSVGElement>(null),
     fileRef = useRef<HTMLInputElement>(null),
     pngRef = useRef<() => void>(() => {}),
     dragBase = useRef<Project | null>(null),
+    edgeState = useRef<EdgeDrag | null>(null),
+    edgeFrame = useRef(0),
     // Unreadable saved data must not be overwritten before the user makes a change.
     holdAutosave = useRef(boot.notice !== "");
   const cancelDrag = useCallback(() => {
     dragBase.current = null;
     setTransient(null);
+    cancelAnimationFrame(edgeFrame.current);
+    edgeFrame.current = 0;
+    edgeState.current = null;
+    setEdgeDrag(null);
     setDragKey((key) => key + 1);
   }, []);
   useEffect(() => cancelDrag, [mode, cancelDrag]);
@@ -174,7 +194,82 @@ function App() {
     setPreview(null);
     setTransient(null);
     setError("");
+    setLastChange("");
   }, [cancelDrag]);
+  // Manual resize: every snapped pointer step re-runs the geometry engine on the committed project
+  // (at most once per frame); releasing applies the last accepted step as one undo entry.
+  const edgeStep = (roomId: string, index: number, delta: number): EdgeDrag => {
+    const prev = edgeState.current;
+    if (!delta) return { roomId, index, delta, result: null, error: "" };
+    try {
+      return {
+        roomId,
+        index,
+        delta,
+        result: moveEdge(p, roomId, index, delta, attached),
+        error: "",
+      };
+    } catch (e) {
+      return {
+        roomId,
+        index,
+        delta,
+        result: prev?.roomId === roomId && prev.index === index ? prev.result : null,
+        error: e instanceof Error ? e.message : "Không thể đổi kích thước.",
+      };
+    }
+  };
+  const onEdgeDrag = (
+    roomId: string,
+    index: number,
+    delta: number,
+    phase: EdgeDragPhase,
+  ) => {
+    if (phase === "cancel") {
+      cancelDrag();
+      return;
+    }
+    if (phase === "move") {
+      edgeState.current = {
+        ...(edgeState.current ?? { result: null, error: "" }),
+        roomId,
+        index,
+        delta,
+      };
+      if (!edgeFrame.current)
+        edgeFrame.current = requestAnimationFrame(() => {
+          edgeFrame.current = 0;
+          const job = edgeState.current;
+          if (!job) return;
+          edgeState.current = edgeStep(job.roomId, job.index, job.delta);
+          setEdgeDrag(edgeState.current);
+        });
+      return;
+    }
+    cancelAnimationFrame(edgeFrame.current);
+    edgeFrame.current = 0;
+    const final = edgeStep(roomId, index, delta),
+      result = final.result;
+    if (!result) {
+      cancelDrag();
+      if (final.error) setError(final.error);
+      return;
+    }
+    const summary =
+      result.affected
+        .map(
+          (id) =>
+            `${names[id] ?? id} ${area(p.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} → ${area(result.project.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} m²`,
+        )
+        .join(" · ") +
+      (result.openings.length ? ` · Dịch dọc tường: ${shiftedOpenings(result)}` : "");
+    commit(result.project);
+    setLastChange(
+      final.error
+        ? `${summary}. Dừng ở vị trí hợp lệ gần nhất (${final.error.replace(/\.$/, "")}).`
+        : summary,
+    );
+  };
   const select = useCallback((id: string, k: "room" | "furniture") => {
     setResizeSuggestion(null);
     setSelected(id);
@@ -182,6 +277,7 @@ function App() {
     setEdge(0);
     setPreview(null);
     setError("");
+    setLastChange("");
   }, []);
   const undo = useCallback(() => {
       cancelDrag();
@@ -291,7 +387,7 @@ function App() {
   const room = p.geometry.rooms.find((r) => r.id === selected),
     furniture = p.furniture.find((f) => f.id === selected),
     box = room && bounds(room.poly),
-    previewRoom = preview?.project.geometry.rooms.find(
+    previewRoom = live?.project.geometry.rooms.find(
       (r) => r.id === room?.id,
     ),
     dimensionBox = previewRoom ? bounds(previewRoom.poly) : box,
@@ -647,6 +743,9 @@ function App() {
           {mode === "2d" ? (
             <Plan
               project={display}
+              base={p}
+              edgeDrag={edgeDrag}
+              onEdgeDrag={onEdgeDrag}
               selected={selected}
               kind={kind}
               onSelect={select}
@@ -704,11 +803,13 @@ function App() {
           <span>
             {preview
               ? "ĐANG XEM TRƯỚC · CHƯA LƯU"
+              : edgeDrag
+                ? "ĐANG KÉO CẠNH · THẢ ĐỂ ÁP DỤNG · ESC ĐỂ HỦY"
               : "CĂN HỘ MẶC ĐỊNH · ĐƠN VỊ MM"}
           </span>
           <small>
             {mode === "2d"
-              ? "Kéo nội thất · Cuộn để zoom · Kéo nền để di chuyển"
+              ? "Chọn phòng rồi kéo cạnh để đổi kích thước · Kéo nội thất · Cuộn để zoom · Kéo nền để di chuyển"
               : "Kéo nội thất · Kéo nền để xoay · Cuộn để zoom"}
           </small>
         </div>
@@ -845,7 +946,7 @@ function App() {
                 <b>
                   {area(
                     (
-                      preview?.project.geometry.rooms.find(
+                      live?.project.geometry.rooms.find(
                         (r) => r.id === room.id,
                       ) ?? room
                     ).poly,
@@ -858,6 +959,10 @@ function App() {
               <h3>
                 Chỉnh hình học <span>mm</span>
               </h3>
+              <small className="help">
+                Kéo trực tiếp tay nắm cam trên cạnh phòng ở bản vẽ 2D (thả để áp
+                dụng, Esc để hủy), hoặc nhập số bên dưới.
+              </small>
               {room.poly.length === 4 ? (
                 <>
                   <label>
@@ -1004,6 +1109,41 @@ function App() {
                     )}
                 </div>
               )}
+              {edgeDrag && (
+                <div
+                  className={
+                    "resize-feedback" +
+                    (edgeDrag.error ? " resize-feedback-error" : "")
+                  }
+                  role="status"
+                >
+                  <b>
+                    Đang kéo cạnh {edgeDrag.index + 1}:{" "}
+                    {edgeDrag.delta > 0 ? "+" : edgeDrag.delta < 0 ? "−" : "±"}
+                    {Math.abs(edgeDrag.delta)} mm
+                  </b>
+                  {edgeDrag.error && (
+                    <p>
+                      {edgeDrag.error}{" "}
+                      {edgeDrag.result
+                        ? "Thả chuột sẽ áp dụng vị trí hợp lệ gần nhất."
+                        : "Thả chuột sẽ không đổi gì."}
+                    </p>
+                  )}
+                  {edgeDrag.result && edgeDrag.result.openings.length > 0 && (
+                    <p className="opening-shifts">
+                      Dịch dọc tường: {shiftedOpenings(edgeDrag.result)}
+                    </p>
+                  )}
+                </div>
+              )}
+              {lastChange && !edgeDrag && !preview && (
+                <div className="resize-feedback" role="status">
+                  <b>Đã đổi kích thước</b>
+                  <p>{lastChange}</p>
+                  <small>Ctrl+Z để hoàn tác.</small>
+                </div>
+              )}
               {preview && (
                 <div className="resize-feedback">
                   <b>Kích thước mới đang chờ áp dụng</b>
@@ -1066,6 +1206,7 @@ function App() {
                         onChange={(e) => {
                           const next = clone(p),
                             anchor = e.target.value as
+                              | "fixed"
                               | "start"
                               | "end"
                               | "center";
@@ -1081,6 +1222,7 @@ function App() {
                           commit(next);
                         }}
                       >
+                        <option value="fixed">Giữ vị trí</option>
                         <option value="start">Neo đầu tường</option>
                         <option value="end">Neo cuối tường</option>
                         <option value="center">Neo giữa tường</option>
@@ -1092,9 +1234,10 @@ function App() {
                 );
               })()}
               <small className="help">
-                Neo quyết định cửa đi theo đầu nào khi đoạn tường dài/ngắn lại:
-                đầu tường, cuối tường, hoặc giữa (dịch một nửa phần thay đổi).
-                Đổi neo không di chuyển cửa.
+                Mặc định cửa giữ nguyên vị trí và chỉ bị đẩy vào trong khi tường
+                ngắn tới mức chạm cửa (cửa sổ có thể hẹp lại). Neo đầu/cuối/giữa:
+                cửa đi theo đầu tường đó, hoặc dịch một nửa phần thay đổi. Đổi neo
+                không di chuyển cửa.
               </small>
             </section>
           </>

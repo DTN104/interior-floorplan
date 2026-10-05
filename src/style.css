@@ -718,3 +718,44 @@ footer {
   color: #9d482e;
   border-color: #dca98f;
 }
+
+/* Room edge handles: drag an edge of the selected room to resize it. */
+.plan .edge-hit {
+  stroke: transparent;
+  stroke-width: 16px;
+  pointer-events: stroke;
+}
+.plan .edge-grip-halo,
+.plan .edge-grip {
+  stroke-linecap: round;
+  pointer-events: none;
+}
+.plan .edge-grip-halo {
+  stroke: #fffdf9;
+  stroke-width: 11px;
+}
+.plan .edge-grip {
+  stroke: #bf693f;
+  stroke-width: 6px;
+}
+.plan .edge-grip.blocked {
+  stroke: #c0392b;
+}
+.plan .edge-hit:hover + .edge-grip-halo {
+  stroke-width: 14px;
+}
+.plan .edge-badge {
+  font: 600 150px sans-serif;
+  fill: #8d4828;
+  paint-order: stroke;
+  stroke: #fffdf9;
+  stroke-width: 36px;
+}
+.plan .edge-badge.blocked {
+  fill: #c0392b;
+}
+@media (pointer: coarse) {
+  .plan .edge-hit {
+    stroke-width: 30px;
+  }
+}

@@ -33,7 +33,8 @@ export type Attachment = {
   wallId: string;
   offset: number;
   width: number;
-  anchor: "start" | "end" | "center";
+  /** fixed: keep position (default); start/end: follow that end of the run; center: move half of the change. */
+  anchor: "fixed" | "start" | "end" | "center";
 };
 export type Door = Attachment & {
   id: string;
@@ -72,6 +73,8 @@ export type Project = {
     wallTracks: string[];
     windowAttachments: Attachment[];
     bayAttachments: Attachment[];
+    /** 2 = openings default to "fixed". Older v2 files used "start" as the implicit default. */
+    anchorVersion?: 2;
   };
   rooms: Record<string, { name: string; mat: string }>;
   furniture: Furniture[];
@@ -223,7 +226,7 @@ function topology(g: Project["geometry"]) {
       wallId: t.id,
       offset: r[along] - t.start,
       width: r[along + 2] - r[along],
-      anchor: "start",
+      anchor: "fixed",
     };
   };
   g.wallTracks = g.walls.map(
@@ -233,6 +236,7 @@ function topology(g: Project["geometry"]) {
   g.bayAttachments = g.bayOpenings.map((r) => link(r));
   g.doors.forEach((d) => Object.assign(d, link(d.rect)));
   g.slides.forEach((d) => Object.assign(d, link(d.rect)));
+  g.anchorVersion = 2;
   refreshRoomLinks(g);
 }
 export function edgeTrack(
@@ -343,19 +347,30 @@ function validatePolygon(r: Room) {
     }
   }
 }
+const boxesOverlap = (a: Point[], b: Point[]) => {
+  const p = bounds(a),
+    q = bounds(b);
+  return (
+    Math.min(p[2], q[2]) - Math.max(p[0], q[0]) > 0 &&
+    Math.min(p[3], q[3]) - Math.max(p[1], q[1]) > 0
+  );
+};
+// Bounding boxes are checked first: most pairs are far apart and polygon clipping is the costly part.
 const intersectionArea = (a: Point[], b: Point[]) =>
-  clipping
-    .intersection([a], [b])
-    .reduce(
-      (sum, p) =>
-        sum +
-        p.reduce(
-          (s, r, i) =>
-            s + (i === 0 ? 1 : -1) * Math.abs(signedArea(r as Point[])),
+  boxesOverlap(a, b)
+    ? clipping
+        .intersection([a], [b])
+        .reduce(
+          (sum, p) =>
+            sum +
+            p.reduce(
+              (s, r, i) =>
+                s + (i === 0 ? 1 : -1) * Math.abs(signedArea(r as Point[])),
+              0,
+            ),
           0,
-        ),
-      0,
-    );
+        )
+    : 0;
 // Preserve the original bearing-block intrusions into nominal room polygons; reject any increase.
 const originalIntrusions = new Map(
   (ROOMS as Room[]).flatMap((r) =>
@@ -391,15 +406,33 @@ export function validateGeometry(p: Project) {
         throw Error(
           `Phòng ${names[g.rooms[i].id] ?? g.rooms[i].id} và ${names[g.rooms[j].id] ?? g.rooms[j].id} chồng nhau.`,
         );
-  for (const r of [
-    ...g.walls,
+  const openingRects = [
     ...g.windows,
     ...g.doors.map((d) => d.rect),
     ...g.slides.map((d) => d.rect),
     ...g.bayOpenings,
-  ])
+  ];
+  // A wall piece may shrink to zero length when a resize consumes it; it must never turn inside out.
+  for (const w of g.walls)
+    if (w[2] < w[0] || w[3] < w[1] || (w[2] === w[0] && w[3] === w[1]))
+      throw Error("Tường hoặc cửa có kích thước không hợp lệ.");
+  for (const r of openingRects)
     if (r[2] <= r[0] || r[3] <= r[1])
       throw Error("Tường hoặc cửa có kích thước không hợp lệ.");
+  const pieces = [
+    ...g.walls.map((w) => w.slice(0, 4) as Rect),
+    ...openingRects,
+  ];
+  for (let i = 0; i < pieces.length; i++)
+    for (let j = i + 1; j < pieces.length; j++) {
+      const a = pieces[i],
+        b = pieces[j];
+      if (
+        Math.min(a[2], b[2]) - Math.max(a[0], b[0]) > 0.5 &&
+        Math.min(a[3], b[3]) - Math.max(a[1], b[1]) > 0.5
+      )
+        throw Error("Tường hoặc cửa chồng lên nhau.");
+    }
   for (const a of [
     ...g.windowAttachments,
     ...g.bayAttachments,
@@ -432,8 +465,8 @@ export type ResizeResult = {
   project: Project;
   affected: string[];
   warnings: string[];
-  /** Openings whose position along their wall run changed (mm, + = right/down). */
-  openings: { id: string; shift: number }[];
+  /** Openings that moved along their wall run (mm, + = right/down) or were narrowed (windows only). */
+  openings: { id: string; shift: number; narrowed?: number }[];
 };
 const doorLabels = [
   "Cửa phòng trẻ",
@@ -520,14 +553,47 @@ export function moveEdge(
       }
     }
   }
-  const affected: string[] = [];
-  for (const r of g.rooms) {
-    let changed = false;
-    const original = input.geometry.rooms.find((q) => q.id === r.id)!;
-    const moving = new Set<number>();
-    original.poly.forEach((v, i) => {
-      const w = original.poly[(i + 1) % original.poly.length];
-      if (
+  const og = input.geometry;
+  const items = [
+    ...og.walls.map((w, i) => ({
+      track: og.wallTracks[i],
+      rect: w.slice(0, 4) as Rect,
+    })),
+    ...og.windows.map((rect, i) => ({
+      track: og.windowAttachments[i].wallId,
+      rect,
+    })),
+    ...og.bayOpenings.map((rect, i) => ({
+      track: og.bayAttachments[i].wallId,
+      rect,
+    })),
+    ...[...og.doors, ...og.slides].map((d) => ({
+      track: d.wallId,
+      rect: d.rect,
+    })),
+  ];
+  // Runs lying in the moving band are translated as a whole.
+  const moved = new Set(
+    og.tracks
+      .filter(
+        (t) =>
+          t.axis === axis &&
+          band.includes(t.cross[0]) &&
+          band.includes(t.cross[1]) &&
+          t.start <= hi &&
+          t.end >= lo,
+      )
+      .map((t) => t.id),
+  );
+  // Bay boxes (rooms not counted in the usable area) hanging off the moving wall travel with it,
+  // together with their own frame runs.
+  const carriedRooms = new Set<string>(),
+    carried = new Set<string>();
+  for (const r of og.rooms) {
+    if (r.counted !== false || r.id === roomId) continue;
+    const touches = r.poly.some((v, i) => {
+      const w = r.poly[(i + 1) % r.poly.length];
+      return (
         v[axis] === w[axis] &&
         band.includes(v[axis]) &&
         overlap(
@@ -536,15 +602,153 @@ export function moveEdge(
           lo,
           hi,
         )
-      ) {
-        moving.add(i);
-        moving.add((i + 1) % r.poly.length);
-      }
+      );
     });
-    moving.forEach((i) => {
-      r.poly[i][axis] += delta;
+    if (!touches) continue;
+    const bb = bounds(r.poly),
+      inside = (x: Rect) =>
+        x[0] >= bb[0] - 300 &&
+        x[1] >= bb[1] - 300 &&
+        x[2] <= bb[2] + 300 &&
+        x[3] <= bb[3] + 300;
+    carriedRooms.add(r.id);
+    for (const t of og.tracks)
+      if (
+        !moved.has(t.id) &&
+        items.every((it) => it.track !== t.id || inside(it.rect))
+      )
+        carried.add(t.id);
+  }
+  // A perpendicular run follows the moving wall at an end only where it stops against that wall.
+  // Runs continued beyond that face by other fixed walls (T-junctions, corner blocks) keep their ends,
+  // so bearing blocks and neighbouring partitions are no longer stretched by accident.
+  const fixedItems = items.filter(
+    (it) => !moved.has(it.track) && !carried.has(it.track),
+  );
+  const continued = (t: Track, c: number, beyond: -1 | 1) => {
+    const ax = t.axis,
+      al = 1 - ax,
+      s0 = beyond < 0 ? c - 1 : c,
+      s1 = beyond < 0 ? c : c + 1;
+    return fixedItems.some(
+      (it) =>
+        it.track !== t.id &&
+        Math.min(it.rect[al + 2], s1) - Math.max(it.rect[al], s0) > 0 &&
+        Math.min(it.rect[ax + 2], t.cross[1]) -
+          Math.max(it.rect[ax], t.cross[0]) >
+          0,
+    );
+  };
+  const ends = new Map<string, [number, number]>();
+  for (const t of og.tracks) {
+    if (
+      t.axis === axis ||
+      moved.has(t.id) ||
+      carried.has(t.id) ||
+      t.cross[0] > hi ||
+      t.cross[1] < lo
+    )
+      continue;
+    const s =
+        band.includes(t.start) && !continued(t, t.start, -1)
+          ? t.start + delta
+          : t.start,
+      e =
+        band.includes(t.end) && !continued(t, t.end, 1) ? t.end + delta : t.end;
+    if (s !== t.start || e !== t.end) ends.set(t.id, [s, e]);
+  }
+  const travels = (id: string) => moved.has(id) || carried.has(id),
+    faceFollows = (it: { track: string; rect: Rect }, c: number) => {
+      const e = ends.get(it.track),
+        t = og.tracks.find((t) => t.id === it.track)!;
+      return (
+        !!e &&
+        ((c === t.start && e[0] !== t.start && it.rect[axis] === c) ||
+          (c === t.end && e[1] !== t.end && it.rect[axis + 2] === c))
+      );
+    };
+  const affected: string[] = [];
+  for (const r of g.rooms) {
+    let changed = false;
+    const original = input.geometry.rooms.find((q) => q.id === r.id)!;
+    if (carriedRooms.has(r.id)) {
+      // Moved as a whole with the wall; its size does not change, so it is not listed as affected.
+      r.poly.forEach((v) => (v[axis] += delta));
+      if (r.at) r.at[axis] += delta;
+      continue;
+    }
+    // Room edges on the moving line follow it, except the stretches held by a wall that stays:
+    // a fixed block the line runs through or along. Those stretches keep their place and a short jog
+    // joins both parts, so e.g. the corner under a bearing block keeps its notch.
+    const n = original.poly.length,
+      at = (c: number, s: number): Point => {
+        const q: Point = [0, 0];
+        q[axis] = c;
+        q[along] = s;
+        return q;
+      },
+      startAt = new Map<number, Point>(),
+      jogs = new Map<number, Point[]>();
+    original.poly.forEach((v, i) => {
+      const w = original.poly[(i + 1) % n],
+        s = Math.min(v[along], w[along]),
+        e = Math.max(v[along], w[along]),
+        c = v[axis];
+      if (v[axis] !== w[axis] || !band.includes(c) || !overlap(s, e, lo, hi))
+        return;
+      const held = items
+        .filter(
+          (it) =>
+            !travels(it.track) &&
+            it.rect[axis] <= c &&
+            c <= it.rect[axis + 2] &&
+            Math.min(it.rect[along + 2], e) - Math.max(it.rect[along], s) > 0 &&
+            ((it.rect[axis] < c && c < it.rect[axis + 2]) ||
+              !faceFollows(it, c)),
+        )
+        .map((it) => [
+          Math.max(s, it.rect[along]),
+          Math.min(e, it.rect[along + 2]),
+        ]);
+      const cuts = [
+        ...new Set([s, e, ...held.flat()].filter((x) => x >= s && x <= e)),
+      ].sort((x, y) => x - y);
+      let parts = cuts
+        .slice(0, -1)
+        .map((x, k) => ({
+          from: x,
+          to: cuts[k + 1],
+          off: held.some(([hs, he]) => hs <= x && cuts[k + 1] <= he)
+            ? 0
+            : delta,
+        }))
+        .filter((part) => part.to - part.from > 0.5);
+      if (v[along] > w[along])
+        parts = parts
+          .reverse()
+          .map((part) => ({ from: part.to, to: part.from, off: part.off }));
+      if (!parts.some((part) => part.off)) return;
       changed = true;
+      startAt.set(i, at(c + parts[0].off, v[along]));
+      startAt.set(
+        -1 - ((i + 1) % n),
+        at(c + parts[parts.length - 1].off, w[along]),
+      );
+      const jog: Point[] = [];
+      parts.forEach((part, k) => {
+        if (k && part.off !== parts[k - 1].off)
+          jog.push(
+            at(c + parts[k - 1].off, part.from),
+            at(c + part.off, part.from),
+          );
+      });
+      if (jog.length) jogs.set(i, jog);
     });
+    if (changed)
+      r.poly = original.poly.flatMap((v, i) => [
+        startAt.get(i) ?? startAt.get(-1 - i) ?? ([...v] as Point),
+        ...(jogs.get(i) ?? []),
+      ]);
     if (changed) {
       affected.push(r.id);
       if (r.at) {
@@ -555,126 +759,171 @@ export function moveEdge(
       }
     }
   }
-  // Track changes define opening anchors and preserve opening widths.
-  for (const t of g.tracks) {
-    const old = input.geometry.tracks.find((q) => q.id === t.id)!;
-    if (
-      t.axis === axis &&
-      band.includes(t.cross[0]) &&
-      band.includes(t.cross[1]) &&
-      t.start <= hi &&
-      t.end >= lo
-    ) {
+  // Translate the runs in the band and the carried bay frames.
+  const shiftRect = (r: Rect) => {
+    r[axis] += delta;
+    r[axis + 2] += delta;
+  };
+  for (const t of g.tracks)
+    if (moved.has(t.id) || (carried.has(t.id) && t.axis === axis)) {
       t.cross[0] += delta;
       t.cross[1] += delta;
-    } else if (t.axis !== axis && t.cross[0] <= hi && t.cross[1] >= lo) {
-      if (band.includes(old.start)) t.start += delta;
-      if (band.includes(old.end)) t.end += delta;
+    } else if (carried.has(t.id)) {
+      t.start += delta;
+      t.end += delta;
     }
-  }
-  const updateRect = (r: Rect, old: Rect, sourceAxis: 0 | 1) => {
-    if (
-      sourceAxis === axis &&
-      band.includes(old[axis]) &&
-      band.includes(old[axis + 2]) &&
-      old[along] <= hi &&
-      old[along + 2] >= lo
-    ) {
-      r[axis] += delta;
-      r[axis + 2] += delta;
-    } else if (old[along] <= hi && old[along + 2] >= lo) {
-      if (band.includes(old[axis])) r[axis] += delta;
-      if (band.includes(old[axis + 2])) r[axis + 2] += delta;
-    }
-  };
-  g.walls.forEach((r, i) =>
-    updateRect(
-      r as unknown as Rect,
-      input.geometry.walls[i] as unknown as Rect,
-      input.geometry.tracks.find((t) => t.id === input.geometry.wallTracks[i])!
-        .axis,
-    ),
+  g.walls.forEach(
+    (w, i) => travels(g.wallTracks[i]) && shiftRect(w as unknown as Rect),
   );
-  // An opening only moves along its run when that run's ends moved: "start" follows the start,
-  // "end" follows the end and "center" moves half of the change, keeping its offset from the run's
-  // midpoint. Openings on untouched runs never move, whatever their anchor.
-  const shifted: ResizeResult["openings"] = [];
-  const opening = (
-    id: string,
-    rect: Rect,
-    oldRect: Rect,
-    attachment: Attachment,
-  ) => {
-    const t = g.tracks.find((t) => t.id === attachment.wallId)!,
-      old = input.geometry.tracks.find((t) => t.id === attachment.wallId)!;
-    const axis = t.axis,
-      along = 1 - axis,
-      ds = t.start - old.start,
-      de = t.end - old.end;
-    const shift =
-      attachment.anchor === "start"
-        ? ds
-        : attachment.anchor === "end"
-          ? de
-          : Math.round((ds + de) / 2);
-    rect[axis] = t.cross[0];
-    rect[axis + 2] = t.cross[1];
-    rect[along] = oldRect[along] + shift;
-    rect[along + 2] = rect[along] + attachment.width;
-    attachment.offset = rect[along] - t.start;
-    if (shift) shifted.push({ id, shift });
-    return [rect[0] - oldRect[0], rect[1] - oldRect[1]] as Point;
-  };
-  g.windows.forEach((r, i) =>
-    opening(
-      "window-" + i,
-      r,
-      input.geometry.windows[i],
-      g.windowAttachments[i],
-    ),
+  g.windows.forEach(
+    (r, i) => travels(g.windowAttachments[i].wallId) && shiftRect(r),
   );
-  g.bayOpenings.forEach((r, i) =>
-    opening("bay-" + i, r, input.geometry.bayOpenings[i], g.bayAttachments[i]),
+  g.bayOpenings.forEach(
+    (r, i) => travels(g.bayAttachments[i].wallId) && shiftRect(r),
   );
-  g.doors.forEach((d, i) => {
-    const shift = opening(d.id, d.rect, input.geometry.doors[i].rect, d);
-    d.h[0] += shift[0];
-    d.h[1] += shift[1];
+  g.doors.forEach((d) => {
+    if (!travels(d.wallId)) return;
+    shiftRect(d.rect);
+    d.h[axis] += delta;
   });
-  g.slides.forEach((d, i) =>
-    opening(d.id, d.rect, input.geometry.slides[i].rect, d),
-  );
-  // When an incident run's start moves, its first solid segment must end at the anchored opening's new start.
-  const allOpenings = [
-    ...g.windows.map((rect, i) => ({
-      rect,
-      a: g.windowAttachments[i],
-      old: input.geometry.windows[i],
-    })),
-    ...g.doors.map((d, i) => ({
-      rect: d.rect,
-      a: d,
-      old: input.geometry.doors[i].rect,
-    })),
-    ...g.slides.map((d, i) => ({
-      rect: d.rect,
-      a: d,
-      old: input.geometry.slides[i].rect,
-    })),
-    ...g.bayOpenings.map((rect, i) => ({
-      rect,
-      a: g.bayAttachments[i],
-      old: input.geometry.bayOpenings[i],
-    })),
-  ];
-  for (const o of allOpenings) {
-    const t = g.tracks.find((t) => t.id === o.a.wallId)!,
-      along = 1 - t.axis;
-    g.walls.forEach((w, i) => {
-      if (g.wallTracks[i] !== t.id) return;
-      const old = input.geometry.walls[i];
-      if (old[along + 2] === o.old[along]) w[along + 2] = o.rect[along];
-      if (old[along] === o.old[along + 2]) w[along] = o.rect[along + 2];
+  g.slides.forEach((d) => travels(d.wallId) && shiftRect(d.rect));
+  // Re-lay every run whose ends moved. Openings keep their position ("fixed"), follow the end they are
+  // anchored to, and are pushed back inside the run when it gets too short. Solid pieces then fill
+  // whatever is left between openings: they stretch, shrink to zero length, or a new piece is added
+  // where a gap would otherwise appear.
+  const shifted: ResizeResult["openings"] = [];
+  for (const [id, [s1, e1]] of ends) {
+    const t = g.tracks.find((t) => t.id === id)!,
+      old = og.tracks.find((t) => t.id === id)!,
+      ax = t.axis,
+      al = 1 - ax,
+      ds = s1 - old.start,
+      de = e1 - old.end;
+    if (e1 - s1 < 10) throw Error("Một đoạn tường bị co hết chiều dài.");
+    t.start = s1;
+    t.end = e1;
+    const ops = [
+      ...g.windows.map((rect, i) => ({
+        id: "window-" + i,
+        rect,
+        old: og.windows[i],
+        a: g.windowAttachments[i] as Attachment,
+        hinge: undefined as Point | undefined,
+      })),
+      ...g.bayOpenings.map((rect, i) => ({
+        id: "bay-" + i,
+        rect,
+        old: og.bayOpenings[i],
+        a: g.bayAttachments[i] as Attachment,
+        hinge: undefined,
+      })),
+      ...g.doors.map((d, i) => ({
+        id: d.id,
+        rect: d.rect,
+        old: og.doors[i].rect,
+        a: d as Attachment,
+        hinge: d.h,
+      })),
+      ...g.slides.map((d, i) => ({
+        id: d.id,
+        rect: d.rect,
+        old: og.slides[i].rect,
+        a: d as Attachment,
+        hinge: undefined,
+      })),
+    ]
+      .filter((o) => o.a.wallId === id)
+      .sort((x, y) => x.old[al] - y.old[al]);
+    const pos = ops.map(
+      (o) =>
+        o.old[al] +
+        (o.a.anchor === "start"
+          ? ds
+          : o.a.anchor === "end"
+            ? de
+            : o.a.anchor === "center"
+              ? Math.round((ds + de) / 2)
+              : 0),
+    );
+    // Windows (not doors, sliding doors or bay openings) narrow when the run becomes shorter than the
+    // openings on it, widest first and never below 300 mm; e.g. a glazing strip spanning a whole wall.
+    const narrowed = new Map<string, number>();
+    let deficit = ops.reduce((s, o) => s + o.a.width, 0) - (e1 - s1);
+    for (const o of [...ops]
+      .filter((o) => o.id.startsWith("window-"))
+      .sort((x, y) => y.a.width - x.a.width)) {
+      if (deficit <= 0) break;
+      const cut = Math.min(deficit, Math.max(0, o.a.width - 300));
+      o.a.width -= cut;
+      deficit -= cut;
+      if (cut) narrowed.set(o.id, cut);
+    }
+    let cursor = s1;
+    ops.forEach((o, k) => {
+      pos[k] = Math.max(pos[k], cursor);
+      cursor = pos[k] + o.a.width;
+    });
+    cursor = e1;
+    for (let k = ops.length - 1; k >= 0; k--) {
+      pos[k] = Math.min(pos[k], cursor - ops[k].a.width);
+      cursor = pos[k];
+    }
+    if (ops.length && pos[0] < s1 - 0.01)
+      throw Error("Đoạn tường quá ngắn cho cửa/cửa sổ trên đó.");
+    const oldGaps: Point[] = [],
+      newGaps: Point[] = [];
+    let oc = old.start,
+      nc = s1;
+    ops.forEach((o, k) => {
+      const shift = pos[k] - o.old[al];
+      o.rect[al] = pos[k];
+      o.rect[al + 2] = pos[k] + o.a.width;
+      o.a.offset = pos[k] - s1;
+      if (o.hinge) o.hinge[al] += shift;
+      if (shift || narrowed.has(o.id))
+        shifted.push({ id: o.id, shift, narrowed: narrowed.get(o.id) });
+      oldGaps.push([oc, o.old[al]]);
+      newGaps.push([nc, pos[k]]);
+      oc = o.old[al + 2];
+      nc = pos[k] + o.a.width;
+    });
+    oldGaps.push([oc, old.end]);
+    newGaps.push([nc, e1]);
+    const pieces = og.walls
+      .map((w, i) => ({ i, s: Number(w[al]), e: Number(w[al + 2]) }))
+      .filter((x) => og.wallTracks[x.i] === id)
+      .sort((x, y) => x.s - y.s || x.e - y.e);
+    const used = new Set<number>(),
+      clampTo = (v: number, L: number, R: number) =>
+        Math.min(R, Math.max(L, v));
+    newGaps.forEach(([L, R], k) => {
+      const [L0, R0] = oldGaps[k],
+        inGap = pieces.filter(
+          (x) => !used.has(x.i) && x.s >= L0 - 0.01 && x.e <= R0 + 0.01,
+        );
+      inGap.forEach((x) => used.add(x.i));
+      if (inGap.length)
+        inGap.forEach((x, n) => {
+          const w = g.walls[x.i];
+          w[al] = n === 0 ? L : clampTo(x.s, L, R);
+          w[al + 2] = n === inGap.length - 1 ? R : clampTo(x.e, L, R);
+        });
+      else if (R - L > 0.01) {
+        // New filler piece: same kind as the nearest piece of this run, never a bearing block.
+        const near = [...pieces].sort(
+            (x, y) =>
+              Math.min(Math.abs(x.s - R0), Math.abs(x.e - L0)) -
+              Math.min(Math.abs(y.s - R0), Math.abs(y.e - L0)),
+          )[0],
+          kind = near ? og.walls[near.i][4] : "e",
+          w = [0, 0, 0, 0, kind === "b" ? "n" : kind] as unknown as Wall;
+        w[ax] = t.cross[0];
+        w[ax + 2] = t.cross[1];
+        w[al] = L;
+        w[al + 2] = R;
+        g.walls.push(w);
+        g.wallTracks.push(id);
+      }
     });
   }
   if (moveAttached && track)
@@ -774,7 +1023,7 @@ const attachment = z.object({
   wallId: z.string(),
   offset: finite,
   width: z.number().positive().max(100000),
-  anchor: z.enum(["start", "end", "center"]),
+  anchor: z.enum(["fixed", "start", "end", "center"]),
 });
 const furnitureSchema = z.object({
   id: z.string().min(1),
@@ -836,6 +1085,7 @@ const geometrySchema = z.object({
   wallTracks: z.array(z.string()),
   windowAttachments: z.array(attachment),
   bayAttachments: z.array(attachment),
+  anchorVersion: z.literal(2).optional(),
 });
 // The original HTML app stores measurement points as {x, y}; v2 stores [x, y].
 const legacyPoint = z.union([
@@ -913,6 +1163,18 @@ export function importProject(value: unknown): Project {
       raw.geometry,
       "geometry",
     ) as Project["geometry"];
+    // Before anchorVersion 2 every opening carried the implicit default "start", which made doors and
+    // windows slide whenever a neighbouring wall moved. Those defaults become "fixed".
+    if (p.geometry.anchorVersion !== 2) {
+      for (const a of [
+        ...p.geometry.windowAttachments,
+        ...p.geometry.bayAttachments,
+        ...p.geometry.doors,
+        ...p.geometry.slides,
+      ])
+        if (a.anchor === "start") a.anchor = "fixed";
+      p.geometry.anchorVersion = 2;
+    }
   }
   p.furniture = b.furniture.map((f) => ({
     ...f,
@@ -1155,7 +1417,7 @@ export function snapFurniture(
     nx = x,
     ny = y;
   for (const w of p.geometry.walls.filter(
-    (_, i) => !p.demolished.includes("w" + i),
+    (w, i) => !p.demolished.includes("w" + i) && w[2] > w[0] && w[3] > w[1],
   )) {
     if (w[2] - w[0] <= w[3] - w[1] && overlap(y - hh, y + hh, w[1], w[3]))
       for (const c of [w[0] - hw, w[2] + hw])

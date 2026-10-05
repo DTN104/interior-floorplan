@@ -43,7 +43,8 @@ function buildArch(){
   });
   [...DOORS, ...SLIDES].forEach(d => { const [x0, y0, x1, y1] = d.rect; const s = box(M(x1-x0), .012, M(y1-y0), mat('#d8d0c0', {roughness:.3}), wx((x0+x1)/2), 0, wz((y0+y1)/2)); s.castShadow = false; archFloor.add(s); });
   WALLS.forEach((w, i) => {
-    if (state.demolished.includes('w'+i)) return;
+    // Pieces consumed by a resize keep their index (demolition IDs) but have zero length: nothing to build.
+    if (state.demolished.includes('w'+i) || w[2] <= w[0] || w[3] <= w[1]) return;
     wallBox(w, 0, w[4] === 'low' ? Math.min(1, top) : top);
     colliders.push([wx(w[0]), wz(w[1]), wx(w[2]), wz(w[3])]);
   });

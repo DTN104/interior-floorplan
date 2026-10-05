@@ -387,21 +387,23 @@ test("mobile layout, library, room selection and concave edge editing remain usa
   await page.screenshot({ path: "test-results/mobile-2d.png", fullPage: true });
 });
 
-test("blocked default resize offers a valid fixed edge and local apply controls on mobile", async ({
+test("blocked resize offers a valid fixed edge and local apply controls on mobile", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   const before = await stored(page);
-  const width = page.getByLabel("Chiều rộng", { exact: true });
-  await width.fill("3870");
-  await width.press("Enter");
+  await page.getByLabel("Chọn phòng", { exact: true }).selectOption("child");
+  // Pulling the child room's bottom wall up 500 mm would push it into the bay window frame.
+  const depth = page.getByLabel("Chiều sâu", { exact: true });
+  await depth.fill("2260");
+  await depth.press("Enter");
   await expect(page.locator(".resize-feedback-error")).toContainText(
-    "Cửa/cửa sổ không còn vừa tường.",
+    "Tường hoặc cửa chồng lên nhau.",
   );
   expect(await stored(page)).toEqual(before);
   await page
-    .getByRole("button", { name: "Giữ cạnh phải và xem trước", exact: true })
+    .getByRole("button", { name: "Giữ cạnh dưới và xem trước", exact: true })
     .click();
   await expect(
     page.getByLabel("Cạnh giữ cố định", { exact: true }),
@@ -410,26 +412,74 @@ test("blocked default resize offers a valid fixed edge and local apply controls 
     "Kích thước mới đang chờ áp dụng",
   );
   expect(await stored(page)).toEqual(before);
-  await expect(width).toHaveValue("3870");
+  await expect(depth).toHaveValue("2260");
   await page
     .getByRole("button", { name: "Hủy kích thước", exact: true })
     .click();
-  await expect(width).toHaveValue("3670");
+  await expect(depth).toHaveValue("2760");
   expect(await stored(page)).toEqual(before);
-  await width.fill("3870");
-  await width.press("Enter");
+  await depth.fill("2260");
+  await depth.press("Enter");
   await page
     .getByRole("button", { name: "Áp dụng kích thước", exact: true })
     .click();
-  const after = await stored(page);
-  expect(after.geometry.rooms[0].poly[0][0]).toBe(6400);
+  const after = await stored(page),
+    ys = after.geometry.rooms
+      .find((r: { id: string }) => r.id === "child")
+      .poly.map((v: number[]) => v[1]);
+  expect(Math.max(...ys) - Math.min(...ys)).toBe(2260);
   expect(after.furniture).toEqual(before.furniture);
   await expect(page.locator("footer")).toContainText("1 thao tác");
-  await width.fill("3.8");
-  await width.press("Enter");
+  await depth.fill("3.8");
+  await depth.press("Enter");
   await expect(page.locator(".resize-feedback-error")).toContainText(
     "3,8 m = 3800 mm",
   );
   expect(await stored(page)).toEqual(after);
-  await expect(width).toHaveValue("3870");
+  await expect(depth).toHaveValue("2260");
+});
+test("dragging a room edge resizes it live, applies once on release and Esc cancels", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto("/");
+  const before = await stored(page);
+  // Phòng ngủ chính is selected by default: drag its right edge 300 mm outwards.
+  await expect(page.locator("[data-edge-handle]")).toHaveCount(4);
+  const handle = await page.locator('[data-edge-handle="1"]').boundingBox(),
+    x = handle!.x + handle!.width / 2,
+    y = handle!.y + handle!.height / 2,
+    mmPerPx = await page.evaluate(() => {
+      const m = document.querySelector("svg.plan")!.getScreenCTM()!;
+      return 1 / m.a;
+    });
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  for (let i = 1; i <= 10; i++)
+    await page.mouse.move(x + (300 / mmPerPx) * (i / 10), y);
+  await expect(page.locator(".inspector [role=status]")).toContainText(
+    "Đang kéo cạnh 2",
+  );
+  expect(await stored(page)).toEqual(before);
+  await page.mouse.up();
+  const after = await stored(page),
+    master = after.geometry.rooms.find((r: { id: string }) => r.id === "master");
+  expect(Math.abs(master.poly[1][0] - 10570)).toBeLessThanOrEqual(10);
+  expect(after.furniture).toEqual(before.furniture);
+  await expect(page.locator("footer")).toContainText("1 thao tác");
+  await expect(page.locator(".inspector [role=status]")).toContainText(
+    "Đã đổi kích thước",
+  );
+  await page.keyboard.press("Control+z");
+  expect(await stored(page)).toEqual(before);
+  // Esc during a drag leaves everything as it was.
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 40, y, { steps: 4 });
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  expect(await stored(page)).toEqual(before);
+  await expect(page.locator("footer")).toContainText("0 thao tác");
+  expect(errors).toEqual([]);
 });

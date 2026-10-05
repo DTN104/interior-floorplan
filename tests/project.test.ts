@@ -292,3 +292,123 @@ describe("legacy v1 files and unreadable autosave", () => {
     expect(badLegacy.m.size).toBe(1);
   });
 });
+describe("resizing without false blocks", () => {
+  const room = (p: ReturnType<typeof defaultProject>, id: string) =>
+    p.geometry.rooms.find((r) => r.id === id)!;
+  it("moves only the partition, not the bearing block or the master/child wall it meets", () => {
+    const p = defaultProject(),
+      r = resizeRoom(p, "master", 0, 3470, "max").project;
+    expect(room(r, "master").poly[0][0]).toBe(6800);
+    expect(room(r, "hall").poly[1][0]).toBe(6560);
+    expect(r.geometry.walls[42]).toEqual(p.geometry.walls[42]); // corner bearing block
+    expect(r.geometry.walls[44]).toEqual(p.geometry.walls[44]); // master/child partition
+    expect(r.geometry.walls[39][2]).toBe(6560); // WC/hall wall still reaches the moved partition
+    expect(importProject(r)).toEqual(r);
+  });
+  it("keeps the notch under a bearing block when the shared wall line moves", () => {
+    const p = defaultProject(),
+      r = resizeRoom(p, "kitchen", 0, 1980, "min").project;
+    expect(room(r, "kitchen").poly[1][0]).toBe(1980);
+    expect(room(r, "gbath").poly).toHaveLength(6);
+    expect(room(r, "gbath").poly).toContainEqual([2420, 3825]);
+    expect(room(r, "gbath").poly).toContainEqual([2220, 3825]);
+    expect(r.geometry.walls[31]).toEqual(p.geometry.walls[31]);
+    expect(importProject(r)).toEqual(r);
+  });
+  it("pushes a fixed door back inside a shortened wall and lets the last piece shrink to zero", () => {
+    const p = defaultProject(),
+      r = resizeRoom(p, "master", 1, 3070, "min");
+    expect(r.project.geometry.doors[1].rect).toEqual([6360, 2190, 6600, 3070]);
+    expect(r.project.geometry.doors[1].h).toEqual([6600, 3070]);
+    expect(r.project.geometry.walls[43].slice(1, 4)).toEqual([
+      3070, 6600, 3070,
+    ]);
+    expect(r.openings).toContainEqual({
+      id: "door-1",
+      shift: -210,
+      narrowed: undefined,
+    });
+    expect(importProject(r.project)).toEqual(r.project);
+  });
+  it("narrows a window that spans the whole wall instead of refusing the resize", () => {
+    const p = defaultProject(),
+      r = resizeRoom(p, "laundry", 0, 1980, "max");
+    expect(r.project.geometry.windowAttachments[2].width).toBe(1620);
+    expect(r.openings.find((o) => o.id === "window-2")?.narrowed).toBe(200);
+    expect(importProject(r.project)).toEqual(r.project);
+  });
+  it("carries bay windows with the facade and closes the corner with the top wall", () => {
+    const p = defaultProject(),
+      res = resizeRoom(p, "master", 0, 3970, "min"),
+      r = res.project;
+    expect(room(r, "bay1").poly).toEqual(
+      room(p, "bay1").poly.map(([x, y]) => [x + 300, y]),
+    );
+    expect(r.geometry.windows[7][0]).toBe(p.geometry.windows[7][0] + 300);
+    expect(r.geometry.walls[8][2]).toBe(10810);
+    expect(res.affected).not.toContain("bay1");
+    expect(importProject(r)).toEqual(r);
+  });
+  it("defaults openings to a fixed position and migrates old implicit start anchors", () => {
+    const p = defaultProject();
+    expect(
+      [...p.geometry.doors, ...p.geometry.windowAttachments].every(
+        (a) => a.anchor === "fixed",
+      ),
+    ).toBe(true);
+    const old = JSON.parse(JSON.stringify(p));
+    delete old.geometry.anchorVersion;
+    old.geometry.doors.forEach((d: { anchor: string }) => (d.anchor = "start"));
+    old.geometry.doors[1].anchor = "end";
+    const migrated = importProject(old);
+    expect(migrated.geometry.doors[0].anchor).toBe("fixed");
+    expect(migrated.geometry.doors[1].anchor).toBe("end");
+    expect(migrated.geometry.anchorVersion).toBe(2);
+  });
+  it("accepts almost every edge drag and every accepted result is valid, overlap-free geometry", () => {
+    const p = defaultProject();
+    let accepted = 0,
+      total = 0;
+    for (const r of p.geometry.rooms.filter((r) => r.counted !== false))
+      for (let i = 0; i < r.poly.length; i++)
+        for (const d of [-500, -300, -100, -50, 50, 100, 300, 500]) {
+          total++;
+          let result;
+          try {
+            result = moveEdge(p, r.id, i, d);
+          } catch {
+            continue;
+          }
+          accepted++;
+          expect(
+            importProject(JSON.parse(JSON.stringify(result.project))),
+          ).toEqual(result.project);
+        }
+    expect(total).toBe(400);
+    expect(accepted).toBeGreaterThanOrEqual(390);
+  }, 60000);
+  it("keeps the plan valid through a long chain of random edge drags", () => {
+    let seed = 2026,
+      p = defaultProject(),
+      accepted = 0;
+    const rnd = () =>
+      (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    for (let step = 0; step < 150; step++) {
+      const rooms = p.geometry.rooms.filter((r) => r.counted !== false),
+        r = rooms[Math.floor(rnd() * rooms.length)],
+        i = Math.floor(rnd() * r.poly.length),
+        d = (Math.floor(rnd() * 20) - 10) * 50 || 50;
+      let next;
+      try {
+        next = moveEdge(p, r.id, i, d).project;
+      } catch {
+        continue;
+      }
+      expect(importProject(JSON.parse(JSON.stringify(next)))).toEqual(next);
+      p = next;
+      accepted++;
+    }
+    expect(accepted).toBeGreaterThanOrEqual(110);
+    expect(p.geometry.walls.length).toBeLessThan(70);
+  }, 60000);
+});

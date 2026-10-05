@@ -2,8 +2,23 @@ import { useRef, useState, useEffect } from "react";
 import { Project, Point, names, bounds } from "./project";
 import { furnSVG } from "./legacy-svg";
 import { buildDefs } from "./legacy-defs";
+export type EdgeDragPhase = "move" | "end" | "cancel";
 type Props = {
   project: Project;
+  /** Committed project: edge handles always refer to its room polygons. */
+  base: Project;
+  edgeDrag: {
+    roomId: string;
+    index: number;
+    delta: number;
+    error: string;
+  } | null;
+  onEdgeDrag: (
+    roomId: string,
+    index: number,
+    delta: number,
+    phase: EdgeDragPhase,
+  ) => void;
   selected: string | null;
   kind: "room" | "furniture";
   onSelect: (id: string, kind: "room" | "furniture") => void;
@@ -19,6 +34,9 @@ type Props = {
 };
 export function Plan({
   project: p,
+  base,
+  edgeDrag,
+  onEdgeDrag,
   selected,
   kind,
   onSelect,
@@ -64,10 +82,20 @@ export function Plan({
     room: string | null;
     moved: boolean;
   } | null>(null);
+  // Dragging a room edge: the delta is measured perpendicular to the edge and snapped to 10 mm.
+  const edge = useRef<{
+    roomId: string;
+    index: number;
+    axis: 0 | 1;
+    start: number;
+    pid: number;
+    delta: number;
+  } | null>(null);
   useEffect(() => {
-    const pid = drag.current?.pid;
+    const pid = drag.current?.pid ?? edge.current?.pid;
     drag.current = null;
     pan.current = null;
+    edge.current = null;
     const svg = svgRef.current;
     if (pid !== undefined && svg?.hasPointerCapture(pid))
       svg.releasePointerCapture(pid);
@@ -81,7 +109,16 @@ export function Plan({
   };
   const finish = (e: React.PointerEvent<SVGSVGElement>) => {
     const d = drag.current,
-      tap = pan.current;
+      tap = pan.current,
+      ed = edge.current;
+    if (ed) {
+      if (ed.pid !== e.pointerId) return;
+      edge.current = null;
+      if (e.currentTarget.hasPointerCapture(e.pointerId))
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      onEdgeDrag(ed.roomId, ed.index, ed.delta, "end");
+      return;
+    }
     if (d && d.pid !== e.pointerId) return;
     drag.current = null;
     pan.current = null;
@@ -99,6 +136,15 @@ export function Plan({
     }
   };
   const cancel = (e: React.PointerEvent<SVGSVGElement>) => {
+    const ed = edge.current;
+    if (ed) {
+      if (ed.pid !== e.pointerId) return;
+      edge.current = null;
+      if (e.currentTarget.hasPointerCapture(e.pointerId))
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      onEdgeDrag(ed.roomId, ed.index, ed.delta, "cancel");
+      return;
+    }
     if (drag.current && drag.current.pid !== e.pointerId) return;
     const wasDragging = !!drag.current;
     drag.current = null;
@@ -152,8 +198,16 @@ export function Plan({
       }}
       onPointerMove={(e) => {
         const at = local(e),
-          d = drag.current;
-        if (d) {
+          d = drag.current,
+          ed = edge.current;
+        if (ed) {
+          if (ed.pid !== e.pointerId) return;
+          const delta = Math.round((at[ed.axis] - ed.start) / 10) * 10;
+          if (delta !== ed.delta) {
+            ed.delta = delta;
+            onEdgeDrag(ed.roomId, ed.index, delta, "move");
+          }
+        } else if (d) {
           if (d.pid !== e.pointerId) return;
           d.last = at;
           onMove(
@@ -354,6 +408,92 @@ export function Plan({
                 >
                   {Math.round(length)} mm · {i + 1}
                 </text>
+              </g>
+            );
+          })}
+      {kind === "room" &&
+        tool === "select" &&
+        base.geometry.rooms
+          .find((r) => r.id === selected)
+          ?.poly.map((a, i, poly) => {
+            const q = poly[(i + 1) % poly.length],
+              axis: 0 | 1 = a[0] === q[0] ? 0 : 1,
+              active = edgeDrag?.roomId === selected && edgeDrag.index === i,
+              box = bounds(poly),
+              inward = (c: number, k: 0 | 1) =>
+                (box[k] + box[k + 2]) / 2 > c ? 650 : -650;
+            if (edgeDrag && !active) return null;
+            const off = active ? edgeDrag!.delta : 0,
+              blocked = active && !!edgeDrag!.error,
+              p1: Point = [...a] as Point,
+              p2: Point = [...q] as Point;
+            p1[axis] += off;
+            p2[axis] += off;
+            const mid: Point = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2],
+              half = Math.min(
+                320,
+                Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) * 0.2,
+              ),
+              g1: Point = [...mid] as Point,
+              g2: Point = [...mid] as Point;
+            g1[1 - axis] -= half;
+            g2[1 - axis] += half;
+            return (
+              <g key={"edge-" + i}>
+                <line
+                  className="edge-hit"
+                  data-edge-handle={i}
+                  x1={p1[0]}
+                  y1={p1[1]}
+                  x2={p2[0]}
+                  y2={p2[1]}
+                  vectorEffect="non-scaling-stroke"
+                  style={{ cursor: axis === 0 ? "ew-resize" : "ns-resize" }}
+                  onPointerDown={(e) => {
+                    if (e.button !== 0 || drag.current || edge.current) return;
+                    e.stopPropagation();
+                    edge.current = {
+                      roomId: selected!,
+                      index: i,
+                      axis,
+                      start: local(e)[axis],
+                      pid: e.pointerId,
+                      delta: 0,
+                    };
+                    svgRef.current!.setPointerCapture(e.pointerId);
+                  }}
+                />
+                <line
+                  className="edge-grip-halo"
+                  x1={g1[0]}
+                  y1={g1[1]}
+                  x2={g2[0]}
+                  y2={g2[1]}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <line
+                  className={"edge-grip" + (blocked ? " blocked" : "")}
+                  x1={g1[0]}
+                  y1={g1[1]}
+                  x2={g2[0]}
+                  y2={g2[1]}
+                  vectorEffect="non-scaling-stroke"
+                />
+                {active && (
+                  <text
+                    className={"edge-badge" + (blocked ? " blocked" : "")}
+                    // Inside the room and off the edge's own dimension label.
+                    x={mid[0] + (axis === 0 ? inward(a[0], 0) : -half - 250)}
+                    y={mid[1] + (axis === 1 ? inward(a[1], 1) : -half - 120)}
+                    textAnchor="middle"
+                    pointerEvents="none"
+                  >
+                    {(off > 0 ? "+" : off < 0 ? "−" : "±") +
+                      Math.abs(off) +
+                      " mm" +
+                      (blocked ? " · bị chặn" : "")}
+                  </text>
+                )}
               </g>
             );
           })}
