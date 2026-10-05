@@ -31,6 +31,7 @@ npm run preview
 - Tường chung, các đầu mút liên quan, cửa và cửa sổ cập nhật trong cùng transaction. Các cạnh thuộc một đoạn tường liên tục có thể ảnh hưởng nhiều phòng; xem preview trước khi áp dụng. Nếu cửa không vừa, polygon tự cắt/chồng nhau, hoặc tường xâm nhập thêm vào phòng, thao tác bị từ chối.
 - Nội thất giữ nguyên kích thước, màu, góc và seed khi đổi phòng. Mặc định giữ vị trí tuyệt đối. Để đồ đi theo tường, gắn phòng/tường trong bảng nội thất rồi bật **Di chuyển đồ đã gắn với tường** khi resize.
 - Nhấn mục thư viện để thêm, kéo đồ trên 2D/3D để di chuyển, chỉnh kích thước/góc/màu trong bảng Chi tiết, hoặc nhân bản/xóa. Kéo liên tục tạo một history entry khi thả. Bám tường và lưới 10 mm hỗ trợ sắp đặt; vị trí không hợp lệ được cảnh báo, không tự xóa hay thu nhỏ đồ.
+- Nhấn **Esc** khi đang kéo để hủy và giữ vị trí đã lưu. Đổi 2D/3D, hoàn tác/làm lại hoặc thao tác cảm ứng bị gián đoạn cũng hủy phiên kéo; thả chuột sau đó không lưu lại vị trí đã hủy.
 - Công cụ **Đo** đặt hai điểm đo cố định. **Tường** bật/tắt phá tường ngăn hoặc tường thấp; tường chịu lực và tường ngoài bị khóa. Các phép đo không đi theo đỉnh khi chỉnh geometry.
 - Trong 3D có phối cảnh, nhìn từ trên, tường thấp/đầy đủ, giờ nắng, ngày/đêm, đi bộ bằng WASD/phím mũi tên hoặc nút cảm ứng. Kéo để nhìn khi đi bộ; chạm cửa để mở/đóng.
 - Xuất PNG cho 2D/3D. `Ctrl/Cmd+Z` hoàn tác, `Ctrl/Cmd+Shift+Z` làm lại, `T` đổi 2D/3D và `Esc` hủy preview.

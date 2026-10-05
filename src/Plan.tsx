@@ -8,6 +8,8 @@ type Props = {
   kind: "room" | "furniture";
   onSelect: (id: string, kind: "room" | "furniture") => void;
   onMove: (id: string, x: number, y: number, finished: boolean) => void;
+  onCancelMove: () => void;
+  dragKey: number;
   onMeasure: (a: Point, b: Point) => void;
   onDemolish: (i: number) => void;
   tool: "select" | "measure" | "demolish";
@@ -21,6 +23,8 @@ export function Plan({
   kind,
   onSelect,
   onMove,
+  onCancelMove,
+  dragKey,
   onMeasure,
   onDemolish,
   tool,
@@ -50,6 +54,14 @@ export function Plan({
     pid: number;
   } | null>(null);
   const pan = useRef<{ start: Point; view: typeof view } | null>(null);
+  useEffect(() => {
+    const pid = drag.current?.pid;
+    drag.current = null;
+    pan.current = null;
+    const svg = svgRef.current;
+    if (pid !== undefined && svg?.hasPointerCapture(pid))
+      svg.releasePointerCapture(pid);
+  }, [dragKey]);
   const local = (e: { clientX: number; clientY: number }): Point => {
     const el = svgRef.current!;
     const pt = new DOMPoint(e.clientX, e.clientY).matrixTransform(
@@ -59,6 +71,7 @@ export function Plan({
   };
   const finish = (e: React.PointerEvent<SVGSVGElement>) => {
     const d = drag.current;
+    if (d && d.pid !== e.pointerId) return;
     drag.current = null;
     pan.current = null;
     if (d) {
@@ -68,8 +81,18 @@ export function Plan({
         d.cy + d.last[1] - d.start[1],
         true,
       );
-      e.currentTarget.releasePointerCapture(e.pointerId);
+      if (e.currentTarget.hasPointerCapture(e.pointerId))
+        e.currentTarget.releasePointerCapture(e.pointerId);
     }
+  };
+  const cancel = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (drag.current && drag.current.pid !== e.pointerId) return;
+    const wasDragging = !!drag.current;
+    drag.current = null;
+    pan.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId))
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    if (wasDragging) onCancelMove();
   };
   return (
     <svg
@@ -107,6 +130,7 @@ export function Plan({
         const at = local(e),
           d = drag.current;
         if (d) {
+          if (d.pid !== e.pointerId) return;
           d.last = at;
           onMove(
             d.id,
@@ -124,7 +148,8 @@ export function Plan({
         }
       }}
       onPointerUp={finish}
-      onPointerCancel={finish}
+      onPointerCancel={cancel}
+      onLostPointerCapture={cancel}
     >
       <defs dangerouslySetInnerHTML={{ __html: buildDefs() }} />
       <rect
@@ -234,7 +259,7 @@ export function Plan({
             onSelect(f.id, "furniture");
           }}
           onPointerDown={(e) => {
-            if (tool !== "select") return;
+            if (tool !== "select" || e.button !== 0 || drag.current) return;
             e.stopPropagation();
             onSelect(f.id, "furniture");
             const start = local(e);

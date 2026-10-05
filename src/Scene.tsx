@@ -19,6 +19,8 @@ type Props = {
   selected: string | null;
   onSelect: (id: string, kind: "room" | "furniture") => void;
   onMove: (id: string, x: number, y: number, finished: boolean) => void;
+  onCancelMove: () => void;
+  dragKey: number;
   night: boolean;
   hour: number;
   cut: boolean;
@@ -35,6 +37,8 @@ function FurnitureModel({
   selected,
   onSelect,
   onMove,
+  onCancelMove,
+  dragKey,
   onDragging,
   draggable,
 }: {
@@ -43,6 +47,8 @@ function FurnitureModel({
   draggable: boolean;
   onSelect: Props["onSelect"];
   onMove: Props["onMove"];
+  onCancelMove: Props["onCancelMove"];
+  dragKey: number;
   onDragging: (b: boolean) => void;
 }) {
   const object = useMemo(() => {
@@ -57,15 +63,24 @@ function FurnitureModel({
     cx: number;
     cy: number;
     pid: number;
+    target: Element;
     latest: THREE.Vector3;
   } | null>(null);
+  useEffect(() => {
+    if (!drag.current) return;
+    const d = drag.current;
+    drag.current = null;
+    onDragging(false);
+    if (d.target.hasPointerCapture?.(d.pid))
+      d.target.releasePointerCapture(d.pid);
+  }, [dragKey, onDragging]);
   const pointer = (e: ThreeEvent<PointerEvent>) => {
     const p = new THREE.Vector3();
     e.ray.intersectPlane(ground, p);
     return p;
   };
   const finish = (e: ThreeEvent<PointerEvent>) => {
-    if (!drag.current) return;
+    if (!drag.current || drag.current.pid !== e.pointerId) return;
     e.stopPropagation();
     const d = drag.current;
     drag.current = null;
@@ -78,6 +93,15 @@ function FurnitureModel({
     );
     (e.target as Element).releasePointerCapture?.(d.pid);
   };
+  const cancel = (e: ThreeEvent<PointerEvent>) => {
+    if (!drag.current || drag.current.pid !== e.pointerId) return;
+    e.stopPropagation();
+    const pid = drag.current.pid;
+    drag.current = null;
+    onDragging(false);
+    onCancelMove();
+    (e.target as Element).releasePointerCapture?.(pid);
+  };
   return (
     <group
       position={[(f.cx - 6000) / 1000, 0, (f.cy - 5300) / 1000]}
@@ -87,7 +111,7 @@ function FurnitureModel({
         onSelect(f.id, "furniture");
       }}
       onPointerDown={(e) => {
-        if (!draggable) return;
+        if (!draggable || e.button !== 0 || drag.current) return;
         e.stopPropagation();
         onSelect(f.id, "furniture");
         const start = pointer(e);
@@ -96,13 +120,14 @@ function FurnitureModel({
           cx: f.cx,
           cy: f.cy,
           pid: e.pointerId,
+          target: e.target as Element,
           latest: start,
         };
         onDragging(true);
         (e.target as Element).setPointerCapture?.(e.pointerId);
       }}
       onPointerMove={(e) => {
-        if (!drag.current) return;
+        if (!drag.current || drag.current.pid !== e.pointerId) return;
         e.stopPropagation();
         const d = drag.current;
         d.latest = pointer(e);
@@ -114,7 +139,7 @@ function FurnitureModel({
         );
       }}
       onPointerUp={finish}
-      onPointerCancel={finish}
+      onPointerCancel={cancel}
     >
       <primitive object={object} dispose={null} />
       {selected && (
@@ -407,6 +432,8 @@ function World(props: Props) {
           draggable={cameraMode !== "walk"}
           onSelect={props.onSelect}
           onMove={props.onMove}
+          onCancelMove={props.onCancelMove}
+          dragKey={props.dragKey}
           onDragging={setDragging}
         />
       ))}

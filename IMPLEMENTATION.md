@@ -23,6 +23,7 @@ SVG, mesh kiến trúc 3D, cửa, sàn, diện tích/chi phí và collision đ�
 - Unit suite đối chiếu toàn bộ fixture và default placements; v1 migration và round-trip v2; dữ liệu không hợp lệ, IDs/references; resize chung, cửa giữ chiều rộng và anchor; phòng lõm; không dịch biên rời có cùng tọa độ; nội thất gắn tường, fit warnings và history transaction.
 - 60 ca model so sánh hash tất cả buffer geometry, transform và thuộc tính material với **factory đọc trực tiếp từ `legacy/index.html`** cho từng mục thư viện. Có kiểm tra seed trang trí không đổi khi dịch model.
 - Playwright kiểm tra preview/apply/undo/redo/autosave, drag tạo một history entry, migration không sửa khóa cũ, JSON/PNG, desktop/mobile, WebGL, đổi transform không dựng lại model và tài nguyên GPU sau các lần resize nội thất.
+- Kiểm thử hồi quy hủy kéo bằng Esc, undo, pointercancel và đổi 2D/3D: dữ liệu đã lưu và history không đổi; kéo lại sau khi sửa vật liệu dùng project hiện tại, giữ chỉnh sửa đó và hoàn tác đúng một lần. 2D/3D dùng chung tín hiệu hủy phiên kéo, xóa snapshot tạm và khôi phục điều khiển camera.
 - Build chạy TypeScript và Vite; bản legacy được đưa vào dist để còn truy cập sau build.
 
 ## Giới hạn cụ thể

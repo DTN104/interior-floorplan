@@ -118,6 +118,7 @@ function App() {
       size: number;
     } | null>(null),
     [transient, setTransient] = useState<Project | null>(null),
+    [dragKey, setDragKey] = useState(0),
     [selected, setSelected] = useState<string | null>("master"),
     [kind, setKind] = useState<"room" | "furniture">("room"),
     [mode, setMode] = useState<"2d" | "3d">("2d"),
@@ -147,13 +148,20 @@ function App() {
     fileRef = useRef<HTMLInputElement>(null),
     pngRef = useRef<() => void>(() => {}),
     dragBase = useRef<Project | null>(null);
+  const cancelDrag = useCallback(() => {
+    dragBase.current = null;
+    setTransient(null);
+    setDragKey((key) => key + 1);
+  }, []);
+  useEffect(() => cancelDrag, [mode, cancelDrag]);
   const commit = useCallback((next: Project) => {
+    cancelDrag();
     setResizeSuggestion(null);
     setHistory((h) => historyCommit(h, next));
     setPreview(null);
     setTransient(null);
     setError("");
-  }, []);
+  }, [cancelDrag]);
   const select = useCallback((id: string, k: "room" | "furniture") => {
     setResizeSuggestion(null);
     setSelected(id);
@@ -163,6 +171,7 @@ function App() {
     setError("");
   }, []);
   const undo = useCallback(() => {
+      cancelDrag();
       setResizeSuggestion(null);
       setPreview(null);
       setTransient(null);
@@ -175,8 +184,9 @@ function App() {
             }
           : h,
       );
-    }, []),
+    }, [cancelDrag]),
     redo = useCallback(() => {
+      cancelDrag();
       setResizeSuggestion(null);
       setPreview(null);
       setTransient(null);
@@ -189,7 +199,7 @@ function App() {
             }
           : h,
       );
-    }, []);
+    }, [cancelDrag]);
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
@@ -206,6 +216,7 @@ function App() {
         e.shiftKey ? redo() : undo();
       }
       if (e.key === "Escape") {
+        cancelDrag();
         setResizeSuggestion(null);
         setError("");
         setPreview(null);
@@ -217,7 +228,7 @@ function App() {
     };
     window.addEventListener("keydown", fn);
     return () => window.removeEventListener("keydown", fn);
-  }, [undo, redo]);
+  }, [undo, redo, cancelDrag]);
   const onMove = useCallback(
     (id: string, x: number, y: number, finished: boolean) => {
       if (preview) return;
@@ -614,6 +625,8 @@ function App() {
               kind={kind}
               onSelect={select}
               onMove={onMove}
+              onCancelMove={cancelDrag}
+              dragKey={dragKey}
               onMeasure={(a: Point, b: Point) =>
                 commit({ ...p, measures: [...p.measures, { a, b }] })
               }
@@ -648,6 +661,8 @@ function App() {
                   selected={selected}
                   onSelect={select}
                   onMove={onMove}
+                  onCancelMove={cancelDrag}
+                  dragKey={dragKey}
                   night={night}
                   hour={hour}
                   cut={cut}

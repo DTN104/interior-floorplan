@@ -3,6 +3,44 @@ const stored = async (page: any) =>
   page.evaluate(() =>
     JSON.parse(localStorage.getItem("interior-floorplan-v2")!),
   );
+for (const cancel of ["Escape", "undo", "pointercancel", "mode-switch"] as const) {
+  test(`cancelled furniture drag (${cancel}) leaves saved project and history intact`, async ({ page }) => {
+    await page.goto("/");
+    const before = await stored(page);
+    const box = await page.locator('[data-furniture="default-0"]').boundingBox();
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box!.x + box!.width / 2 + 35, box!.y + box!.height / 2 + 15);
+    expect(await stored(page)).toEqual(before);
+    if (cancel === "Escape") await page.keyboard.press("Escape");
+    else if (cancel === "undo") await page.keyboard.press("Control+z");
+    else if (cancel === "pointercancel")
+      await page.locator("svg.plan").dispatchEvent("pointercancel", { pointerId: 1 });
+    else {
+      await page.keyboard.press("t");
+      await expect(page.locator("canvas")).toBeVisible();
+      await page.keyboard.press("t");
+    }
+    await page.mouse.up();
+    expect(await stored(page)).toEqual(before);
+    await expect(page.locator("footer")).toContainText("0 thao tác");
+
+    // A subsequent completed drag must use the current project, not an old drag snapshot.
+    await page.getByLabel("Chọn phòng", { exact: true }).selectOption("master");
+    await page.getByLabel("Vật liệu sàn", { exact: true }).selectOption("carpet");
+    const updated = await stored(page);
+    const nextBox = await page.locator('[data-furniture="default-0"]').boundingBox();
+    await page.mouse.move(nextBox!.x + nextBox!.width / 2, nextBox!.y + nextBox!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(nextBox!.x + nextBox!.width / 2 + 25, nextBox!.y + nextBox!.height / 2 + 10);
+    await page.mouse.up();
+    const moved = await stored(page);
+    expect(moved.rooms).toEqual(updated.rooms);
+    expect(moved.furniture[0].cx).not.toBe(before.furniture[0].cx);
+    await page.getByRole("button", { name: "Hoàn tác", exact: false }).click();
+    expect(await stored(page)).toEqual(updated);
+  });
+}
 test("shared resize previews, applies once, updates openings, undoes and autosaves", async ({
   page,
 }) => {
