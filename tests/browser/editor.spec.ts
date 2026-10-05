@@ -236,3 +236,50 @@ test("mobile layout, library, room selection and concave edge editing remain usa
   await page.getByRole("button", { name: "Áp dụng", exact: true }).click();
   await page.screenshot({ path: "test-results/mobile-2d.png", fullPage: true });
 });
+
+test("blocked default resize offers a valid fixed edge and local apply controls on mobile", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  const before = await stored(page);
+  const width = page.getByLabel("Chiều rộng", { exact: true });
+  await width.fill("3870");
+  await width.press("Enter");
+  await expect(page.locator(".resize-feedback-error")).toContainText(
+    "Cửa/cửa sổ không còn vừa tường.",
+  );
+  expect(await stored(page)).toEqual(before);
+  await page
+    .getByRole("button", { name: "Giữ cạnh phải và xem trước", exact: true })
+    .click();
+  await expect(
+    page.getByLabel("Cạnh giữ cố định", { exact: true }),
+  ).toHaveValue("max");
+  await expect(page.locator(".inspector .resize-feedback")).toContainText(
+    "Kích thước mới đang chờ áp dụng",
+  );
+  expect(await stored(page)).toEqual(before);
+  await expect(width).toHaveValue("3870");
+  await page
+    .getByRole("button", { name: "Hủy kích thước", exact: true })
+    .click();
+  await expect(width).toHaveValue("3670");
+  expect(await stored(page)).toEqual(before);
+  await width.fill("3870");
+  await width.press("Enter");
+  await page
+    .getByRole("button", { name: "Áp dụng kích thước", exact: true })
+    .click();
+  const after = await stored(page);
+  expect(after.geometry.rooms[0].poly[0][0]).toBe(6400);
+  expect(after.furniture).toEqual(before.furniture);
+  await expect(page.locator("footer")).toContainText("1 thao tác");
+  await width.fill("3.8");
+  await width.press("Enter");
+  await expect(page.locator(".resize-feedback-error")).toContainText(
+    "3,8 m = 3800 mm",
+  );
+  expect(await stored(page)).toEqual(after);
+  await expect(width).toHaveValue("3870");
+});

@@ -60,11 +60,13 @@ function NumberField({
   value,
   onChange,
   min = 0,
+  onInvalid,
 }: {
   label: string;
   value: number;
   onChange: (v: number) => void;
   min?: number;
+  onInvalid?: () => void;
 }) {
   const [draft, setDraft] = useState(String(value));
   useEffect(() => setDraft(String(value)), [value]);
@@ -81,8 +83,12 @@ function NumberField({
         }}
         onBlur={() => {
           const v = draft.trim() ? Number(draft) : NaN;
-          if (Number.isFinite(v) && v >= min) onChange(v);
-          else setDraft(String(value));
+          if (Number.isFinite(v) && v >= min) {
+            if (v !== value) onChange(v);
+          } else {
+            setDraft(String(value));
+            onInvalid?.();
+          }
         }}
       />
     </label>
@@ -103,6 +109,14 @@ function App() {
       future: [] as Project[],
     })),
     [preview, setPreview] = useState<ResizeResult | null>(null),
+    [resizeSuggestion, setResizeSuggestion] = useState<{
+      base: Project;
+      result: ResizeResult;
+      fixed: "min" | "max";
+      axis: 0 | 1;
+      roomId: string;
+      size: number;
+    } | null>(null),
     [transient, setTransient] = useState<Project | null>(null),
     [selected, setSelected] = useState<string | null>("master"),
     [kind, setKind] = useState<"room" | "furniture">("room"),
@@ -134,12 +148,14 @@ function App() {
     pngRef = useRef<() => void>(() => {}),
     dragBase = useRef<Project | null>(null);
   const commit = useCallback((next: Project) => {
+    setResizeSuggestion(null);
     setHistory((h) => historyCommit(h, next));
     setPreview(null);
     setTransient(null);
     setError("");
   }, []);
   const select = useCallback((id: string, k: "room" | "furniture") => {
+    setResizeSuggestion(null);
     setSelected(id);
     setKind(k);
     setEdge(0);
@@ -147,6 +163,7 @@ function App() {
     setError("");
   }, []);
   const undo = useCallback(() => {
+      setResizeSuggestion(null);
       setPreview(null);
       setTransient(null);
       setHistory((h) =>
@@ -160,6 +177,7 @@ function App() {
       );
     }, []),
     redo = useCallback(() => {
+      setResizeSuggestion(null);
       setPreview(null);
       setTransient(null);
       setHistory((h) =>
@@ -188,6 +206,8 @@ function App() {
         e.shiftKey ? redo() : undo();
       }
       if (e.key === "Escape") {
+        setResizeSuggestion(null);
+        setError("");
         setPreview(null);
         setTransient(null);
         setTool("select");
@@ -242,6 +262,10 @@ function App() {
   const room = p.geometry.rooms.find((r) => r.id === selected),
     furniture = p.furniture.find((f) => f.id === selected),
     box = room && bounds(room.poly),
+    previewRoom = preview?.project.geometry.rooms.find(
+      (r) => r.id === room?.id,
+    ),
+    dimensionBox = previewRoom ? bounds(previewRoom.poly) : box,
     warnings = useMemo(() => furnitureWarnings(display), [display]);
   const cost = display.geometry.rooms
       .filter((r) => r.counted !== false)
@@ -255,6 +279,7 @@ function App() {
       .filter((r) => r.counted !== false)
       .reduce((s, r) => s + area(r.poly), 0);
   const attempt = (fn: () => ResizeResult) => {
+    setResizeSuggestion(null);
     try {
       setPreview(fn());
       setError("");
@@ -262,6 +287,40 @@ function App() {
       setPreview(null);
       setError(e instanceof Error ? e.message : "Không thể chỉnh geometry.");
     }
+  };
+  const attemptResize = (axis: 0 | 1, size: number) => {
+    if (!room) return;
+    setResizeSuggestion(null);
+    try {
+      setPreview(resizeRoom(p, room.id, axis, size, fixed, attached));
+      setError("");
+    } catch (e) {
+      setPreview(null);
+      setError(
+        e instanceof Error ? e.message : "Không thể thay đổi kích thước.",
+      );
+      const other = fixed === "min" ? "max" : "min";
+      try {
+        const result = resizeRoom(p, room.id, axis, size, other, attached);
+        setResizeSuggestion({
+          base: p,
+          result,
+          fixed: other,
+          axis,
+          roomId: room.id,
+          size,
+        });
+      } catch {
+        /* The alternative is also invalid; retain the original error. */
+      }
+    }
+  };
+  const invalidRoomSize = () => {
+    setPreview(null);
+    setResizeSuggestion(null);
+    setError(
+      "Nhập kích thước theo mm, tối thiểu 100 mm. Ví dụ: 3,8 m = 3800 mm.",
+    );
   };
   const add = (item: (string | number)[]) => {
     const id = crypto.randomUUID(),
@@ -753,9 +812,12 @@ function App() {
                     <select
                       aria-label="Cạnh giữ cố định"
                       value={fixed}
-                      onChange={(e) =>
-                        setFixed(e.target.value as "min" | "max")
-                      }
+                      onChange={(e) => {
+                        setFixed(e.target.value as "min" | "max");
+                        setPreview(null);
+                        setResizeSuggestion(null);
+                        setError("");
+                      }}
                     >
                       <option value="min">Trái / trên</option>
                       <option value="max">Phải / dưới</option>
@@ -764,27 +826,22 @@ function App() {
                   <div className="two-fields">
                     <NumberField
                       label="Chiều rộng"
-                      value={box[2] - box[0]}
+                      value={dimensionBox![2] - dimensionBox![0]}
                       min={100}
-                      onChange={(v) =>
-                        attempt(() =>
-                          resizeRoom(p, room.id, 0, v, fixed, attached),
-                        )
-                      }
+                      onInvalid={invalidRoomSize}
+                      onChange={(v) => attemptResize(0, v)}
                     />
                     <NumberField
                       label="Chiều sâu"
-                      value={box[3] - box[1]}
+                      value={dimensionBox![3] - dimensionBox![1]}
                       min={100}
-                      onChange={(v) =>
-                        attempt(() =>
-                          resizeRoom(p, room.id, 1, v, fixed, attached),
-                        )
-                      }
+                      onInvalid={invalidRoomSize}
+                      onChange={(v) => attemptResize(1, v)}
                     />
                   </div>
                   <small className="help">
-                    Nhập kích thước rồi Enter hoặc rời ô để xem trước.
+                    Nhập theo mm (3,8 m = 3800 mm), Enter để xem trước, rồi nhấn
+                    Áp dụng kích thước.
                   </small>
                 </>
               ) : (
@@ -824,7 +881,12 @@ function App() {
                 <input
                   type="checkbox"
                   checked={attached}
-                  onChange={(e) => setAttached(e.target.checked)}
+                  onChange={(e) => {
+                    setAttached(e.target.checked);
+                    setPreview(null);
+                    setResizeSuggestion(null);
+                    setError("");
+                  }}
                 />
                 Di chuyển đồ đã gắn với tường
               </label>
@@ -836,6 +898,86 @@ function App() {
               >
                 Xem trước dịch cạnh →
               </button>
+              {error && (
+                <div className="resize-feedback resize-feedback-error">
+                  <p>{error}</p>
+                  {resizeSuggestion &&
+                    resizeSuggestion.base === p &&
+                    resizeSuggestion.roomId === room.id && (
+                      <>
+                        <p>
+                          {resizeSuggestion.axis === 0
+                            ? "Chiều rộng"
+                            : "Chiều sâu"}{" "}
+                          {resizeSuggestion.size} mm có thể thực hiện nếu giữ
+                          cạnh{" "}
+                          {resizeSuggestion.axis === 0
+                            ? resizeSuggestion.fixed === "min"
+                              ? "trái"
+                              : "phải"
+                            : resizeSuggestion.fixed === "min"
+                              ? "trên"
+                              : "dưới"}
+                          .
+                        </p>
+                        <button
+                          className="wide"
+                          onClick={() => {
+                            const suggestion = resizeSuggestion;
+                            setFixed(suggestion.fixed);
+                            attempt(() =>
+                              resizeRoom(
+                                p,
+                                room.id,
+                                suggestion.axis,
+                                suggestion.size,
+                                suggestion.fixed,
+                                attached,
+                              ),
+                            );
+                          }}
+                        >
+                          Giữ cạnh{" "}
+                          {resizeSuggestion.axis === 0
+                            ? resizeSuggestion.fixed === "min"
+                              ? "trái"
+                              : "phải"
+                            : resizeSuggestion.fixed === "min"
+                              ? "trên"
+                              : "dưới"}{" "}
+                          và xem trước
+                        </button>
+                      </>
+                    )}
+                </div>
+              )}
+              {preview && (
+                <div className="resize-feedback">
+                  <b>Kích thước mới đang chờ áp dụng</b>
+                  <p>
+                    {preview.affected
+                      .map(
+                        (id) =>
+                          `${names[id] ?? id}: ${area(p.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} → ${area(preview.project.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} m²`,
+                      )
+                      .join(" · ")}
+                  </p>
+                  <small>
+                    Chưa lưu thay đổi. Kích thước nội thất được giữ nguyên.
+                  </small>
+                  <div className="two-fields">
+                    <button onClick={() => setPreview(null)}>
+                      Hủy kích thước
+                    </button>
+                    <button
+                      className="primary"
+                      onClick={() => commit(preview.project)}
+                    >
+                      Áp dụng kích thước
+                    </button>
+                  </div>
+                </div>
+              )}
               <small className="help">
                 Thay đổi bản vẽ kích thước thực tế. Tường chịu lực vẫn bị khóa
                 trong công cụ phá tường.

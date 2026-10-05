@@ -687,3 +687,34 @@ footer {
     font-size: 9px;
   }
 }
+
+.resize-feedback {
+  margin: 12px 0;
+  padding: 12px;
+  background: #f4eadc;
+  border: 1px solid #dec7ab;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: #6d4c31;
+}
+.resize-feedback p {
+  margin: 8px 0;
+}
+.resize-feedback small {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 10px;
+}
+.resize-feedback .two-fields {
+  gap: 6px;
+}
+.resize-feedback button {
+  font-size: 10px;
+  padding: 8px 6px;
+}
+.resize-feedback-error {
+  background: #fff0ea;
+  color: #9d482e;
+  border-color: #dca98f;
+}
