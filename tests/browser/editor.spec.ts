@@ -483,3 +483,30 @@ test("dragging a room edge resizes it live, applies once on release and Esc canc
   await expect(page.locator("footer")).toContainText("0 thao tác");
   expect(errors).toEqual([]);
 });
+test("the furniture library overlay can be closed on narrow screens", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  const library = page.locator(".library"),
+    toggle = page.getByRole("button", { name: "＋ Nội thất", exact: true });
+  await toggle.click();
+  await expect(library).toBeVisible();
+  await page
+    .getByRole("button", { name: "Đóng thư viện nội thất", exact: true })
+    .click();
+  await expect(library).toBeHidden();
+  await toggle.click();
+  await page.getByLabel("Tìm nội thất", { exact: true }).press("Escape");
+  await expect(library).toBeHidden();
+  await toggle.click();
+  await page
+    .locator(".library-backdrop")
+    .click({ position: { x: 340, y: 200 } });
+  await expect(library).toBeHidden();
+  await page.setViewportSize({ width: 800, height: 700 });
+  await toggle.click();
+  await expect(library).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(library).toBeHidden();
+});

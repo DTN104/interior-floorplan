@@ -336,6 +336,7 @@ function App() {
         setPreview(null);
         setTransient(null);
         setTool("select");
+        setLibraryOpen(false);
       }
       if (e.key.toLowerCase() === "t")
         setMode((m) => (m === "2d" ? "3d" : "2d"));
@@ -594,13 +595,33 @@ function App() {
           }}
         />
       </header>
-      <aside className={"library " + (libraryOpen ? "open" : "")}>
+      <aside
+        className={"library " + (libraryOpen ? "open" : "")}
+        aria-label="Thư viện nội thất"
+        onKeyDown={(e) => {
+          // Also closes from the search field, where the global shortcuts are ignored.
+          if (e.key === "Escape" && libraryOpen) {
+            e.stopPropagation();
+            setLibraryOpen(false);
+          }
+        }}
+      >
         <div className="aside-title">
           <div>
             <small>BỘ SƯU TẬP GỐC</small>
             <h2>Nội thất</h2>
           </div>
-          <span className="badge">60</span>
+          <span className="aside-actions">
+            <span className="badge">60</span>
+            <button
+              className="library-close"
+              aria-label="Đóng thư viện nội thất"
+              title="Đóng (Esc)"
+              onClick={() => setLibraryOpen(false)}
+            >
+              ×
+            </button>
+          </span>
         </div>
         <input
           className="search"
@@ -659,10 +680,18 @@ function App() {
           Mở bản gốc ↗
         </a>
       </aside>
+      {libraryOpen && (
+        // Narrow screens only (CSS): tapping outside the overlay closes it.
+        <div
+          className="library-backdrop"
+          onClick={() => setLibraryOpen(false)}
+        />
+      )}
       <main>
         <div className="canvas-toolbar">
           <button
             className="mobile-library"
+            aria-expanded={libraryOpen}
             onClick={() => setLibraryOpen((v) => !v)}
           >
             ＋ Nội thất

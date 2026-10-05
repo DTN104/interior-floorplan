@@ -522,6 +522,15 @@ footer {
 .mobile-library {
   display: none;
 }
+.aside-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.library-close,
+.library-backdrop {
+  display: none;
+}
 @media (min-width: 1700px) {
   .app {
     grid-template-columns: 250px minmax(0, 1fr) 320px;
@@ -576,6 +585,24 @@ footer {
     width: 230px;
     z-index: 8;
     box-shadow: 8px 0 35px #302d2725;
+  }
+  /* The overlay covers the toolbar button that opened it, so it closes from inside or outside. */
+  .library-close {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    font-size: 20px;
+    line-height: 1;
+    border-radius: 8px;
+  }
+  .library-backdrop {
+    display: block;
+    position: fixed;
+    inset: 106px 0 32px 0;
+    z-index: 7;
+    background: #302d2726;
   }
   header {
     flex-wrap: wrap;
@@ -676,6 +703,9 @@ footer {
   }
   .library.open {
     top: 106px;
+    bottom: 0;
+  }
+  .library-backdrop {
     bottom: 0;
   }
   .canvas-toolbar input[type="range"] {
