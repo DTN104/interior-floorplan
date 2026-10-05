@@ -82,6 +82,32 @@ test("shared resize previews, applies once, updates openings, undoes and autosav
   expect(await stored(page)).toEqual(changed);
   expect(errors).toEqual([]);
 });
+test("width and depth previews apply together as one undo transaction", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Chọn phòng", { exact: true }).selectOption("living");
+  const before = await stored(page);
+  const width = page.getByLabel("Chiều rộng", { exact: true });
+  const depth = page.getByLabel("Chiều sâu", { exact: true });
+  await width.fill("5460");
+  await width.press("Enter");
+  await expect(page.getByText("Xem trước thay đổi", { exact: true })).toBeVisible();
+  await depth.fill("1");
+  await depth.press("Enter");
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(width).toHaveValue("5460");
+  await depth.fill("3960");
+  await depth.press("Enter");
+  expect(await stored(page)).toEqual(before);
+  await page.getByRole("button", { name: "Áp dụng", exact: true }).click();
+  const changed = await stored(page);
+  const poly = changed.geometry.rooms.find((r: any) => r.id === "living").poly;
+  const xs = poly.map((v: number[]) => v[0]), ys = poly.map((v: number[]) => v[1]);
+  expect(Math.max(...xs) - Math.min(...xs)).toBe(5460);
+  expect(Math.max(...ys) - Math.min(...ys)).toBe(3960);
+  expect(changed.furniture).toEqual(before.furniture);
+  await page.getByRole("button", { name: "Hoàn tác", exact: false }).click();
+  expect(await stored(page)).toEqual(before);
+});
 test("furniture drag creates one history entry, preserves seed and supports JSON/PNG export", async ({
   page,
 }) => {

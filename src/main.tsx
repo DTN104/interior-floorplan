@@ -417,17 +417,34 @@ function App() {
   const attemptResize = (axis: 0 | 1, size: number) => {
     if (!room) return;
     setResizeSuggestion(null);
+    const resize = (anchor: "min" | "max") => {
+      const result = resizeRoom(
+        preview?.project ?? p, room.id, axis, size, anchor, attached,
+      );
+      if (!preview) return result;
+      result.affected = [...new Set([...preview.affected, ...result.affected])];
+      const openings = new Map(preview.openings.map((o) => [o.id, { ...o }]));
+      for (const o of result.openings) {
+        const previous = openings.get(o.id);
+        openings.set(o.id, {
+          ...o,
+          shift: (previous?.shift ?? 0) + o.shift,
+          narrowed: (previous?.narrowed ?? 0) + (o.narrowed ?? 0),
+        });
+      }
+      result.openings = [...openings.values()].filter((o) => o.shift || o.narrowed);
+      return result;
+    };
     try {
-      setPreview(resizeRoom(p, room.id, axis, size, fixed, attached));
+      setPreview(resize(fixed));
       setError("");
     } catch (e) {
-      setPreview(null);
       setError(
         e instanceof Error ? e.message : "Không thể thay đổi kích thước.",
       );
       const other = fixed === "min" ? "max" : "min";
       try {
-        const result = resizeRoom(p, room.id, axis, size, other, attached);
+        const result = resize(other);
         setResizeSuggestion({
           base: p,
           result,
@@ -442,7 +459,6 @@ function App() {
     }
   };
   const invalidRoomSize = () => {
-    setPreview(null);
     setResizeSuggestion(null);
     setError(
       "Nhập kích thước theo mm, tối thiểu 100 mm. Ví dụ: 3,8 m = 3800 mm.",
@@ -1112,16 +1128,7 @@ function App() {
                           onClick={() => {
                             const suggestion = resizeSuggestion;
                             setFixed(suggestion.fixed);
-                            attempt(() =>
-                              resizeRoom(
-                                p,
-                                room.id,
-                                suggestion.axis,
-                                suggestion.size,
-                                suggestion.fixed,
-                                attached,
-                              ),
-                            );
+                            attempt(() => suggestion.result);
                           }}
                         >
                           Giữ cạnh{" "}

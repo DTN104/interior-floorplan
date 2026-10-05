@@ -842,7 +842,7 @@ export function moveEdge(
           : o.a.anchor === "end"
             ? de
             : o.a.anchor === "center"
-              ? Math.round((ds + de) / 2)
+              ? (ds + de) / 2
               : 0),
     );
     // Windows (not doors, sliding doors or bay openings) narrow when the run becomes shorter than the

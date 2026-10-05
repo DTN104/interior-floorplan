@@ -19,6 +19,8 @@ Resize là transaction trên bản sao project, không scale toàn scene. Các b
 
 Kéo cạnh trên bản vẽ dùng cùng engine: mỗi bước 10 mm chạy lại resize trên project đã lưu (tối đa một lần mỗi khung hình); bước vượt giới hạn giữ lại kết quả hợp lệ gần nhất; thả chuột áp dụng kết quả đó thành một mục undo. Kiểm tra hình học lọc bounding box trước khi gọi polygon clipping nên một bước resize mất khoảng 10 ms.
 
+Nhập rộng/sâu tiếp tục từ geometry đang xem trước, gộp các phòng và dịch chuyển cửa bị ảnh hưởng; áp dụng cả hai kích thước thành một mục undo. Nhập số không hợp lệ giữ bản xem trước hợp lệ trước đó. Neo giữa giữ chính xác phần dịch chuyển nửa mm, không làm tròn từng lần, để tăng/giảm kích thước trở lại không gây lệch cửa tích lũy.
+
 Một số khối chịu lực gốc vốn nhô vào polygon diện tích phòng (ví dụ góc phòng con). Engine giữ đúng fixture này và cho phép mức giao ban đầu, nhưng chặn mức giao tăng lên. Điều này vừa giữ dữ liệu gốc vừa tránh hợp thức hóa lỗi geometry mới. Wall run phải được phủ liên tục bởi solid segments và openings; mọi gap mới bị từ chối.
 
 SVG, mesh kiến trúc 3D, cửa, sàn, diện tích/chi phí và collision đều đọc cùng project. Các phép đo là điểm tuyệt đối. Nội thất gắn tường chỉ di chuyển khi người dùng chọn chế độ tương ứng; fit warnings dùng footprint xoay và giao polygon, bao gồm tường chưa bị phá.

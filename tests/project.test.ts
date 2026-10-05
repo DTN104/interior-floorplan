@@ -218,6 +218,18 @@ describe("atomic shared geometry transactions", () => {
       expect(importProject(r.project)).toEqual(r.project);
     }
   });
+  it("reverses odd-mm center-anchor resizing without accumulating opening drift", () => {
+    const p = defaultProject();
+    p.geometry.doors[1].anchor = "center";
+    let current = p;
+    for (let i = 0; i < 3; i++) {
+      current = resizeRoom(current, "master", 1, 3371, "min").project;
+      expect(current.geometry.doors[1].rect[1]).toBe(2400.5);
+      expect(importProject(current)).toEqual(current);
+      current = resizeRoom(current, "master", 1, 3370, "min").project;
+      expect(current.geometry.doors[1]).toEqual(p.geometry.doors[1]);
+    }
+  });
   it("stores one completed transaction and restores all geometry on undo/redo", () => {
     const p = defaultProject(),
       next = resizeRoom(p, "master", 0, 3870, "max").project;
