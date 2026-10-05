@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   defaultProject,
   importProject,
@@ -10,6 +11,10 @@ import {
   historyCommit,
   edgeTrack,
   validateGeometry,
+  loadProject,
+  STORAGE_KEY,
+  LEGACY_STORAGE_KEY,
+  UNREADABLE_STORAGE_KEY,
 } from "../src/project";
 import {
   ROOMS,
@@ -182,6 +187,37 @@ describe("atomic shared geometry transactions", () => {
     f.placement = { roomId: "master" };
     expect(furnitureWarnings(p)).toContain(f.id);
   });
+  it("moves an opening only when its own wall run changes; center follows half of the change", () => {
+    const base = defaultProject();
+    for (let i = 0; i < base.geometry.doors.length; i++) {
+      const p = clone(base);
+      p.geometry.doors[i].anchor = "center";
+      const r = resizeRoom(p, "master", 0, 3870, "max");
+      // Doors whose run did not change length keep their position along the wall.
+      const along = (d: number[]) => [d[1], d[3]];
+      expect(along(r.project.geometry.doors[i].rect)).toEqual(
+        along(p.geometry.doors[i].rect),
+      );
+      expect(r.openings.find((o) => o.id === "door-" + i)).toBeUndefined();
+    }
+    const expected = {
+      start: [2400, 3280],
+      end: [2500, 3380],
+      center: [2450, 3330],
+    };
+    for (const anchor of ["start", "end", "center"] as const) {
+      const p = defaultProject();
+      p.geometry.doors[1].anchor = anchor;
+      const r = resizeRoom(p, "master", 1, 3470, "min");
+      const rect = r.project.geometry.doors[1].rect;
+      expect([rect[1], rect[3]]).toEqual(expected[anchor]);
+      expect(r.project.geometry.doors[1].width).toBe(880);
+      expect(r.openings.find((o) => o.id === "door-1")?.shift).toBe(
+        anchor === "start" ? undefined : anchor === "end" ? 100 : 50,
+      );
+      expect(importProject(r.project)).toEqual(r.project);
+    }
+  });
   it("stores one completed transaction and restores all geometry on undo/redo", () => {
     const p = defaultProject(),
       next = resizeRoom(p, "master", 0, 3870, "max").project;
@@ -191,5 +227,68 @@ describe("atomic shared geometry transactions", () => {
     const undone = { past: [], present: h.past[0], future: [h.present] };
     expect(undone.present).toEqual(p);
     expect(undone.future[0]).toEqual(next);
+  });
+});
+describe("legacy v1 files and unreadable autosave", () => {
+  const legacy = JSON.parse(
+    readFileSync(
+      new URL("./fixtures/legacy-v1-export.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const memory = (init: Record<string, string>) => {
+    const m = new Map(Object.entries(init));
+    return {
+      m,
+      getItem: (k: string) => m.get(k) ?? null,
+      setItem: (k: string, v: string) => void m.set(k, v),
+    };
+  };
+  it("imports a file exported by the original HTML app, including {x, y} measures", () => {
+    // Exported from legacy/index.html after one measurement with its own tool.
+    expect(legacy.measures[0].a).toEqual({ x: 5140, y: 6050 });
+    const p = importProject(legacy);
+    expect(p.measures).toEqual([{ a: [5140, 6050], b: [7510, 6050] }]);
+    expect(p.furniture.map((f) => f.id)).toEqual(
+      legacy.furniture.map((f: { id: string }) => f.id),
+    );
+    expect(p.rooms).toEqual(legacy.rooms);
+    expect(importProject(JSON.parse(JSON.stringify(p)))).toEqual(p);
+  });
+  it("keeps v2 strict and explains invalid files in Vietnamese", () => {
+    const v2 = JSON.parse(JSON.stringify(defaultProject()));
+    v2.measures = [{ a: { x: 0, y: 0 }, b: { x: 1, y: 1 } }];
+    expect(() => importProject(v2)).toThrow(
+      "Dữ liệu không hợp lệ tại measures.0.a: sai kiểu dữ liệu",
+    );
+    expect(() =>
+      importProject({
+        ...legacy,
+        furniture: [{ ...legacy.furniture[0], w: -5 }],
+      }),
+    ).toThrow("Dữ liệu không hợp lệ tại furniture.0.w");
+  });
+  it("migrates a legacy autosave and never silently replaces unreadable saved data", () => {
+    const v1 = memory({ [LEGACY_STORAGE_KEY]: JSON.stringify(legacy) });
+    const migrated = loadProject(v1);
+    expect(migrated.source).toBe("v1");
+    expect(migrated.notice).toBe("");
+    expect(migrated.project.measures).toHaveLength(1);
+
+    const broken = memory({ [STORAGE_KEY]: "{broken" });
+    const loaded = loadProject(broken);
+    expect(loaded.source).toBe("default");
+    expect(loaded.notice).toContain("Không đọc được phương án đã lưu");
+    expect(broken.m.get(STORAGE_KEY)).toBe("{broken");
+    expect(broken.m.get(UNREADABLE_STORAGE_KEY)).toBe("{broken");
+
+    const badLegacy = memory({
+      [LEGACY_STORAGE_KEY]: JSON.stringify({ ...legacy, furniture: "x" }),
+    });
+    const failed = loadProject(badLegacy);
+    expect(failed.notice).toContain(
+      "Không chuyển được phương án từ bản HTML cũ",
+    );
+    expect(badLegacy.m.size).toBe(1);
   });
 });

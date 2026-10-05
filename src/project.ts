@@ -432,7 +432,24 @@ export type ResizeResult = {
   project: Project;
   affected: string[];
   warnings: string[];
+  /** Openings whose position along their wall run changed (mm, + = right/down). */
+  openings: { id: string; shift: number }[];
 };
+const doorLabels = [
+  "Cửa phòng trẻ",
+  "Cửa phòng chính",
+  "Cửa WC chính",
+  "Cửa WC chung",
+  "Cửa phòng con",
+  "Cửa vào",
+];
+export function openingName(id: string) {
+  const n = Number(id.slice(id.lastIndexOf("-") + 1));
+  if (id.startsWith("door-")) return doorLabels[n] ?? `Cửa ${n + 1}`;
+  if (id.startsWith("slide-")) return `Cửa trượt ${n + 1}`;
+  if (id.startsWith("bay-")) return `Ô bệ cửa sổ ${n + 1}`;
+  return `Cửa sổ ${n + 1}`;
+}
 // Move a local wall run, its opposite room faces and incident endpoints. No global coordinate scaling.
 export function moveEdge(
   input: Project,
@@ -578,58 +595,54 @@ export function moveEdge(
         .axis,
     ),
   );
+  // An opening only moves along its run when that run's ends moved: "start" follows the start,
+  // "end" follows the end and "center" moves half of the change, keeping its offset from the run's
+  // midpoint. Openings on untouched runs never move, whatever their anchor.
+  const shifted: ResizeResult["openings"] = [];
   const opening = (
+    id: string,
     rect: Rect,
     oldRect: Rect,
     attachment: Attachment,
-    oldAttachment: Attachment,
   ) => {
     const t = g.tracks.find((t) => t.id === attachment.wallId)!,
       old = input.geometry.tracks.find((t) => t.id === attachment.wallId)!;
     const axis = t.axis,
-      along = 1 - axis;
-    const gap =
-      old.end - old.start - oldAttachment.offset - oldAttachment.width;
-    attachment.offset =
+      along = 1 - axis,
+      ds = t.start - old.start,
+      de = t.end - old.end;
+    const shift =
       attachment.anchor === "start"
-        ? oldAttachment.offset
+        ? ds
         : attachment.anchor === "end"
-          ? t.end - t.start - gap - attachment.width
-          : (t.end - t.start - attachment.width) / 2;
+          ? de
+          : Math.round((ds + de) / 2);
     rect[axis] = t.cross[0];
     rect[axis + 2] = t.cross[1];
-    rect[along] = t.start + attachment.offset;
+    rect[along] = oldRect[along] + shift;
     rect[along + 2] = rect[along] + attachment.width;
+    attachment.offset = rect[along] - t.start;
+    if (shift) shifted.push({ id, shift });
     return [rect[0] - oldRect[0], rect[1] - oldRect[1]] as Point;
   };
   g.windows.forEach((r, i) =>
     opening(
+      "window-" + i,
       r,
       input.geometry.windows[i],
       g.windowAttachments[i],
-      input.geometry.windowAttachments[i],
     ),
   );
   g.bayOpenings.forEach((r, i) =>
-    opening(
-      r,
-      input.geometry.bayOpenings[i],
-      g.bayAttachments[i],
-      input.geometry.bayAttachments[i],
-    ),
+    opening("bay-" + i, r, input.geometry.bayOpenings[i], g.bayAttachments[i]),
   );
   g.doors.forEach((d, i) => {
-    const shift = opening(
-      d.rect,
-      input.geometry.doors[i].rect,
-      d,
-      input.geometry.doors[i],
-    );
+    const shift = opening(d.id, d.rect, input.geometry.doors[i].rect, d);
     d.h[0] += shift[0];
     d.h[1] += shift[1];
   });
   g.slides.forEach((d, i) =>
-    opening(d.rect, input.geometry.slides[i].rect, d, input.geometry.slides[i]),
+    opening(d.id, d.rect, input.geometry.slides[i].rect, d),
   );
   // When an incident run's start moves, its first solid segment must end at the anchored opening's new start.
   const allOpenings = [
@@ -674,7 +687,7 @@ export function moveEdge(
   validateGeometry(p);
   verifyTopology(g);
   const warnings = furnitureWarnings(p);
-  return { project: p, affected, warnings };
+  return { project: p, affected, warnings, openings: shifted };
 }
 export function resizeRoom(
   p: Project,
@@ -824,27 +837,66 @@ const geometrySchema = z.object({
   windowAttachments: z.array(attachment),
   bayAttachments: z.array(attachment),
 });
-const baseSchema = z.object({
-  furniture: z.array(furnitureSchema).max(2000),
-  rooms: z
-    .record(
-      z.object({
-        name: z.string().max(200),
-        mat: z.string().refine((k) => k in MATS),
-      }),
-    )
-    .optional(),
-  demolished: z.array(z.string()).optional(),
-  measures: z
-    .array(z.object({ a: pt, b: pt }))
-    .max(2000)
-    .optional(),
-});
+// The original HTML app stores measurement points as {x, y}; v2 stores [x, y].
+const legacyPoint = z.union([
+  pt,
+  z.object({ x: finite, y: finite }).transform((v): Point => [v.x, v.y]),
+]);
+const baseSchema = (legacy: boolean) =>
+  z.object({
+    furniture: z.array(furnitureSchema).max(2000),
+    rooms: z
+      .record(
+        z.object({
+          name: z.string().max(200),
+          mat: z.string().refine((k) => k in MATS),
+        }),
+      )
+      .optional(),
+    demolished: z.array(z.string()).optional(),
+    measures: z
+      .array(
+        legacy
+          ? z.object({ a: legacyPoint, b: legacyPoint })
+          : z.object({ a: pt, b: pt }),
+      )
+      .max(2000)
+      .optional(),
+  });
+// Turn schema errors into a short Vietnamese message instead of raw Zod JSON.
+function check<S extends z.ZodTypeAny>(
+  schema: S,
+  value: unknown,
+  root?: string,
+): z.output<S> {
+  const r = schema.safeParse(value);
+  if (r.success) return r.data;
+  const [issue] = r.error.issues,
+    where = [root, ...issue.path].filter((s) => s !== undefined).join(".");
+  const why =
+    issue.code === "invalid_type"
+      ? issue.received === "undefined"
+        ? "thiếu dữ liệu"
+        : "sai kiểu dữ liệu"
+      : issue.code === "too_small" || issue.code === "too_big"
+        ? "giá trị ngoài giới hạn cho phép"
+        : issue.code === "invalid_string"
+          ? "sai định dạng"
+          : "giá trị không được hỗ trợ";
+  const more =
+    r.error.issues.length > 1
+      ? ` (và ${r.error.issues.length - 1} lỗi khác)`
+      : "";
+  throw Error(
+    `Dữ liệu không hợp lệ tại ${where || "gốc file"}: ${why}${more}.`,
+  );
+}
 function unique(ids: string[], what: string) {
   if (new Set(ids).size !== ids.length) throw Error(`ID ${what} bị trùng.`);
 }
 export function importProject(value: unknown): Project {
-  if (!value || typeof value !== "object") throw Error("JSON không hợp lệ.");
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw Error("JSON không hợp lệ.");
   const raw = value as Record<string, unknown>;
   if (
     raw.schemaVersion !== undefined &&
@@ -852,11 +904,15 @@ export function importProject(value: unknown): Project {
     raw.schemaVersion !== 2
   )
     throw Error("Phiên bản JSON không được hỗ trợ.");
-  const b = baseSchema.parse(value),
+  const b = check(baseSchema(raw.schemaVersion !== 2), value),
     p = defaultProject();
   if (raw.schemaVersion === 2) {
     if (raw.units !== "mm") throw Error("Đơn vị phải là mm.");
-    p.geometry = geometrySchema.parse(raw.geometry) as Project["geometry"];
+    p.geometry = check(
+      geometrySchema,
+      raw.geometry,
+      "geometry",
+    ) as Project["geometry"];
   }
   p.furniture = b.furniture.map((f) => ({
     ...f,
@@ -1000,16 +1056,77 @@ function verifyTopology(g: Project["geometry"]) {
   }
 }
 export const STORAGE_KEY = "interior-floorplan-v2";
-export function loadProject(): Project {
+export const LEGACY_STORAGE_KEY = "huxing-design-v1";
+export const UNREADABLE_STORAGE_KEY = "interior-floorplan-v2-unreadable";
+export type LoadResult = {
+  project: Project;
+  source: "v2" | "v1" | "default";
+  /** Non-empty when saved data could not be read; the caller must not autosave over it silently. */
+  notice: string;
+};
+const reason = (e: unknown) =>
+  e instanceof SyntaxError
+    ? "JSON bị hỏng"
+    : e instanceof Error
+      ? e.message.replace(/\.$/, "")
+      : "lỗi không xác định";
+export function loadProject(
+  storage?: Pick<Storage, "getItem" | "setItem">,
+): LoadResult {
+  const fallback = (notice = ""): LoadResult => ({
+    project: defaultProject(),
+    source: "default",
+    notice,
+  });
+  let store = storage,
+    saved: string | null = null,
+    old: string | null = null;
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) return importProject(JSON.parse(saved));
-    const old = localStorage.getItem("huxing-design-v1");
-    if (old) return importProject(JSON.parse(old));
-  } catch (e) {
-    console.warn("Không thể đọc phương án đã lưu:", e);
+    store ??= localStorage;
+    saved = store.getItem(STORAGE_KEY);
+    if (!saved) old = store.getItem(LEGACY_STORAGE_KEY);
+  } catch {
+    return fallback();
   }
-  return defaultProject();
+  if (saved) {
+    try {
+      return {
+        project: importProject(JSON.parse(saved)),
+        source: "v2",
+        notice: "",
+      };
+    } catch (e) {
+      let kept = false;
+      try {
+        store!.setItem(UNREADABLE_STORAGE_KEY, saved);
+        kept = true;
+      } catch {
+        /* Quota or privacy mode: the original key is still left untouched until the next edit. */
+      }
+      return fallback(
+        `Không đọc được phương án đã lưu (${reason(e)}). ` +
+          (kept
+            ? `Bản lưu gốc được giữ trong khóa "${UNREADABLE_STORAGE_KEY}" của trình duyệt. `
+            : "") +
+          "Đang mở căn hộ mặc định; dữ liệu đã lưu chỉ bị thay khi bạn chỉnh sửa.",
+      );
+    }
+  }
+  if (old) {
+    try {
+      return {
+        project: importProject(JSON.parse(old)),
+        source: "v1",
+        notice: "",
+      };
+    } catch (e) {
+      return fallback(
+        `Không chuyển được phương án từ bản HTML cũ (${reason(e)}). ` +
+          "Dữ liệu bản cũ vẫn giữ nguyên; đang mở căn hộ mặc định.",
+      );
+    }
+  }
+  return fallback();
 }
 export function historyCommit(
   history: { past: Project[]; present: Project; future: Project[] },

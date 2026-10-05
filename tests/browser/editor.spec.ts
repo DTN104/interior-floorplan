@@ -137,7 +137,8 @@ test("imports v1, leaves old autosave intact, and rejects malformed input atomic
     ],
     rooms: { master: { name: "Phòng cũ", mat: "carpet" } },
     demolished: [],
-    measures: [{ a: [0, 0], b: [1000, 0] }],
+    // The original HTML app stores measurement points as {x, y}.
+    measures: [{ a: { x: 0, y: 0 }, b: { x: 1000, y: 0 } }],
   };
   await page.addInitScript(
     (v) => localStorage.setItem("huxing-design-v1", JSON.stringify(v)),
@@ -147,6 +148,7 @@ test("imports v1, leaves old autosave intact, and rejects malformed input atomic
   const migrated = await stored(page);
   expect(migrated.furniture).toHaveLength(1);
   expect(migrated.rooms.master.name).toBe("Phòng cũ");
+  expect(migrated.measures).toEqual([{ a: [0, 0], b: [1000, 0] }]);
   expect(
     await page.evaluate(() =>
       JSON.parse(localStorage.getItem("huxing-design-v1")!),
@@ -165,6 +167,116 @@ test("imports v1, leaves old autosave intact, and rejects malformed input atomic
     buffer: Buffer.from(JSON.stringify(old)),
   });
   expect((await stored(page)).schemaVersion).toBe(2);
+  // A file exported by legacy/index.html itself (one measurement made with its tool).
+  await page
+    .locator("input[type=file]")
+    .setInputFiles("tests/fixtures/legacy-v1-export.json");
+  await expect(page.locator(".error")).toHaveCount(0);
+  const real = await stored(page);
+  expect(real.furniture).toHaveLength(46);
+  expect(real.measures).toEqual([{ a: [5140, 6050], b: [7510, 6050] }]);
+});
+test("unreadable autosave is explained and kept until the first edit", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("interior-floorplan-v2", "{broken"),
+  );
+  await page.goto("/");
+  await expect(page.getByRole("alert")).toContainText(
+    "Không đọc được phương án đã lưu",
+  );
+  const raw = (key: string) =>
+    page.evaluate((k) => localStorage.getItem(k), key);
+  expect(await raw("interior-floorplan-v2")).toBe("{broken");
+  expect(await raw("interior-floorplan-v2-unreadable")).toBe("{broken");
+  await page.getByLabel("Vật liệu sàn", { exact: true }).selectOption("carpet");
+  expect((await stored(page)).rooms.master.mat).toBe("carpet");
+  expect(await raw("interior-floorplan-v2-unreadable")).toBe("{broken");
+});
+test("clicking a room on the 2D plan selects it, while panning does not", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const room = page.getByLabel("Chọn phòng", { exact: true });
+  const spot = (id: string) =>
+    page.evaluate((id) => {
+      const poly = document.querySelector(`[data-room="${id}"]`)!;
+      const r = poly.getBoundingClientRect();
+      for (let fy = 0.1; fy < 0.95; fy += 0.05)
+        for (let fx = 0.1; fx < 0.95; fx += 0.05) {
+          const x = r.left + r.width * fx,
+            y = r.top + r.height * fy;
+          if (document.elementFromPoint(x, y) === poly) return [x, y];
+        }
+      throw Error("no free spot in " + id);
+    }, id);
+  const [kx, ky] = await spot("kitchen");
+  await page.mouse.click(kx, ky);
+  await expect(room).toHaveValue("kitchen");
+  const plan = page.locator("svg.plan"),
+    before = await plan.getAttribute("viewBox"),
+    [hx, hy] = await spot("hall");
+  await page.mouse.move(hx, hy);
+  await page.mouse.down();
+  await page.mouse.move(hx + 60, hy + 40, { steps: 6 });
+  await page.mouse.up();
+  expect(await plan.getAttribute("viewBox")).not.toBe(before);
+  await expect(room).toHaveValue("kitchen");
+  const [lx, ly] = await spot("living");
+  await page.mouse.click(lx, ly);
+  await expect(room).toHaveValue("living");
+});
+test("exporting during a resize preview writes only the applied project", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByLabel("Chọn phòng", { exact: true }).selectOption("living");
+  const width = page.getByLabel("Chiều rộng", { exact: true });
+  await width.fill("5750");
+  await width.press("Enter");
+  await expect(
+    page.getByText("Xem trước thay đổi", { exact: true }),
+  ).toBeVisible();
+  const download = page.waitForEvent("download");
+  await page
+    .getByRole("button", { name: "Xuất phương án", exact: false })
+    .click();
+  const fs = await import("node:fs/promises");
+  const data = JSON.parse(
+    await fs.readFile((await (await download).path())!, "utf8"),
+  );
+  expect(data).toEqual(await stored(page));
+  expect(
+    data.geometry.rooms.find((r: { id: string }) => r.id === "living").poly[1][0],
+  ).toBe(10270);
+});
+test("a center-anchored door moves only with its own wall and the preview says so", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByLabel("Cạnh cần dịch", { exact: true }).selectOption("3");
+  await page.getByLabel("Neo door-1", { exact: true }).selectOption("center");
+  const anchored = await stored(page);
+  expect(anchored.geometry.doors[1].anchor).toBe("center");
+  expect(anchored.geometry.doors[1].rect).toEqual([6360, 2400, 6600, 3280]);
+  await page.getByLabel("Chọn phòng", { exact: true }).selectOption("living");
+  await page.getByLabel("Chiều rộng", { exact: true }).fill("5750");
+  await page.getByLabel("Chiều rộng", { exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Áp dụng", exact: true }).click();
+  expect((await stored(page)).geometry.doors[1].rect).toEqual([
+    6360, 2400, 6600, 3280,
+  ]);
+  await page.getByLabel("Chọn phòng", { exact: true }).selectOption("master");
+  await page.getByLabel("Chiều sâu", { exact: true }).fill("3470");
+  await page.getByLabel("Chiều sâu", { exact: true }).press("Enter");
+  await expect(page.locator(".preview-card")).toContainText(
+    "Cửa phòng chính +50 mm",
+  );
+  await page.getByRole("button", { name: "Áp dụng", exact: true }).click();
+  expect((await stored(page)).geometry.doors[1].rect).toEqual([
+    6360, 2450, 6600, 3330,
+  ]);
 });
 test("real WebGL renders, exports PNG and moves furniture without rebuilding its meshes", async ({
   page,

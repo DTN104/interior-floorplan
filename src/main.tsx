@@ -33,6 +33,7 @@ import {
   furnitureWarnings,
   historyCommit,
   snapFurniture,
+  openingName,
 } from "./project";
 import { LIB, MATS } from "./legacy-data";
 import "./style.css";
@@ -102,12 +103,22 @@ function download(name: string, blob: Blob) {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+function shiftedOpenings(result: ResizeResult) {
+  return result.openings
+    .map(
+      (o) =>
+        `${openingName(o.id)} ${o.shift > 0 ? "+" : "−"}${Math.abs(o.shift)} mm`,
+    )
+    .join(" · ");
+}
 function App() {
-  const [history, setHistory] = useState(() => ({
+  const [boot] = useState(() => loadProject()),
+    [history, setHistory] = useState(() => ({
       past: [] as Project[],
-      present: loadProject(),
+      present: boot.project,
       future: [] as Project[],
     })),
+    [notice, setNotice] = useState(boot.notice),
     [preview, setPreview] = useState<ResizeResult | null>(null),
     [resizeSuggestion, setResizeSuggestion] = useState<{
       base: Project;
@@ -147,7 +158,9 @@ function App() {
     svgRef = useRef<SVGSVGElement>(null),
     fileRef = useRef<HTMLInputElement>(null),
     pngRef = useRef<() => void>(() => {}),
-    dragBase = useRef<Project | null>(null);
+    dragBase = useRef<Project | null>(null),
+    // Unreadable saved data must not be overwritten before the user makes a change.
+    holdAutosave = useRef(boot.notice !== "");
   const cancelDrag = useCallback(() => {
     dragBase.current = null;
     setTransient(null);
@@ -201,6 +214,11 @@ function App() {
       );
     }, [cancelDrag]);
   useEffect(() => {
+    if (holdAutosave.current) {
+      holdAutosave.current = false;
+      setSaveState("Chưa autosave — dữ liệu đã lưu đang được giữ nguyên");
+      return;
+    }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
       setSaveState("Đã lưu trên trình duyệt");
@@ -437,10 +455,11 @@ function App() {
           <button onClick={exportPng}>Ảnh PNG</button>
           <button
             className="primary"
+            title="Xuất phương án đã áp dụng (không gồm thay đổi đang xem trước)"
             onClick={() =>
               download(
                 "noi-that-v2.json",
-                new Blob([JSON.stringify(display, null, 2)], {
+                new Blob([JSON.stringify(p, null, 2)], {
                   type: "application/json",
                 }),
               )
@@ -464,8 +483,15 @@ function App() {
               commit(next);
               select(next.geometry.rooms[0].id, "room");
               setFitKey((k) => k + 1);
+              setNotice("");
             } catch (e) {
-              setError(e instanceof Error ? e.message : "File không hợp lệ.");
+              setError(
+                e instanceof SyntaxError
+                  ? "File không phải JSON hợp lệ."
+                  : e instanceof Error
+                    ? e.message
+                    : "File không hợp lệ.",
+              );
             } finally {
               if (fileRef.current) fileRef.current.value = "";
             }
@@ -686,11 +712,18 @@ function App() {
               : "Kéo nội thất · Kéo nền để xoay · Cuộn để zoom"}
           </small>
         </div>
-        {error && (
+        {error ? (
           <div className="error" role="alert">
             {error}
             <button onClick={() => setError("")}>×</button>
           </div>
+        ) : (
+          notice && (
+            <div className="error load-notice" role="alert">
+              {notice}
+              <button onClick={() => setNotice("")}>×</button>
+            </div>
+          )
         )}
         {preview && (
           <div className="preview-card">
@@ -704,6 +737,11 @@ function App() {
                   )
                   .join(" · ")}
               </p>
+              {preview.openings.length > 0 && (
+                <p className="opening-shifts">
+                  Dịch dọc tường: {shiftedOpenings(preview)}
+                </p>
+              )}
               <small>
                 {preview.warnings.length} món cần kiểm tra vị trí · kích thước
                 nội thất được giữ nguyên
@@ -977,6 +1015,11 @@ function App() {
                       )
                       .join(" · ")}
                   </p>
+                  {preview.openings.length > 0 && (
+                    <p className="opening-shifts">
+                      Dịch dọc tường: {shiftedOpenings(preview)}
+                    </p>
+                  )}
                   <small>
                     Chưa lưu thay đổi. Kích thước nội thất được giữ nguyên.
                   </small>
@@ -1016,19 +1059,7 @@ function App() {
                 return openings.length ? (
                   openings.map((o) => (
                     <label key={o.id}>
-                      {o.id.startsWith("door-")
-                        ? [
-                            "Cửa phòng trẻ",
-                            "Cửa phòng chính",
-                            "Cửa WC chính",
-                            "Cửa WC chung",
-                            "Cửa phòng con",
-                            "Cửa vào",
-                          ][Number(o.id.slice(5))]
-                        : o.id.startsWith("window-")
-                          ? "Cửa sổ " + (Number(o.id.slice(7)) + 1)
-                          : "Cửa trượt"}{" "}
-                      · {o.width} mm
+                      {openingName(o.id)} · {o.width} mm
                       <select
                         aria-label={"Neo " + o.id}
                         value={o.anchor}
@@ -1060,6 +1091,11 @@ function App() {
                   <p className="help">Cạnh này không có cửa được gắn.</p>
                 );
               })()}
+              <small className="help">
+                Neo quyết định cửa đi theo đầu nào khi đoạn tường dài/ngắn lại:
+                đầu tường, cuối tường, hoặc giữa (dịch một nửa phần thay đổi).
+                Đổi neo không di chuyển cửa.
+              </small>
             </section>
           </>
         )}

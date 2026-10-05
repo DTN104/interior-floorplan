@@ -53,7 +53,17 @@ export function Plan({
     last: Point;
     pid: number;
   } | null>(null);
-  const pan = useRef<{ start: Point; view: typeof view } | null>(null);
+  // Pointer capture for panning retargets the click event to <svg>, so a room is selected on
+  // pointerup when the pointer did not travel further than a tap.
+  const pan = useRef<{
+    start: Point;
+    view: typeof view;
+    pid: number;
+    client: Point;
+    tap: number;
+    room: string | null;
+    moved: boolean;
+  } | null>(null);
   useEffect(() => {
     const pid = drag.current?.pid;
     drag.current = null;
@@ -70,10 +80,13 @@ export function Plan({
     return [Math.round(pt.x), Math.round(pt.y)];
   };
   const finish = (e: React.PointerEvent<SVGSVGElement>) => {
-    const d = drag.current;
+    const d = drag.current,
+      tap = pan.current;
     if (d && d.pid !== e.pointerId) return;
     drag.current = null;
     pan.current = null;
+    if (!d && tap?.room && !tap.moved && tap.pid === e.pointerId)
+      onSelect(tap.room, "room");
     if (d) {
       onMove(
         d.id,
@@ -122,7 +135,18 @@ export function Plan({
           return;
         }
         if (tool === "select" && !drag.current) {
-          pan.current = { start: at, view };
+          pan.current = {
+            start: at,
+            view,
+            pid: e.pointerId,
+            client: [e.clientX, e.clientY],
+            tap: e.pointerType === "mouse" ? 4 : 9,
+            room:
+              (e.target as Element)
+                .closest("[data-room]")
+                ?.getAttribute("data-room") ?? null,
+            moved: false,
+          };
           e.currentTarget.setPointerCapture(e.pointerId);
         }
       }}
@@ -140,6 +164,14 @@ export function Plan({
           );
         } else if (pan.current) {
           const old = pan.current;
+          if (old.pid !== e.pointerId) return;
+          if (
+            !old.moved &&
+            Math.hypot(e.clientX - old.client[0], e.clientY - old.client[1]) <
+              old.tap
+          )
+            return;
+          old.moved = true;
           setView((v) => ({
             ...v,
             x: v.x + old.start[0] - at[0],
@@ -169,20 +201,14 @@ export function Plan({
         />
       )}
       {p.geometry.rooms.map((r) => (
-        <g
+        <polygon
           key={r.id}
-          onClick={() => tool === "select" && onSelect(r.id, "room")}
-        >
-          <polygon
-            data-room={r.id}
-            points={r.poly.map((p) => p.join(",")).join(" ")}
-            fill={`url(#m-${p.rooms[r.id].mat})`}
-            stroke={
-              selected === r.id && kind === "room" ? "#bf693f" : "#d1c7b8"
-            }
-            strokeWidth={selected === r.id ? 35 : 10}
-          />
-        </g>
+          data-room={r.id}
+          points={r.poly.map((p) => p.join(",")).join(" ")}
+          fill={`url(#m-${p.rooms[r.id].mat})`}
+          stroke={selected === r.id && kind === "room" ? "#bf693f" : "#d1c7b8"}
+          strokeWidth={selected === r.id ? 35 : 10}
+        />
       ))}
       {p.geometry.walls.map((w, i) => (
         <rect
