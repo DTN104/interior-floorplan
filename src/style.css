@@ -789,3 +789,211 @@ footer {
     stroke-width: 30px;
   }
 }
+
+/* Drawn plans: layout mode on the 2D plan. */
+.layout-toggle.unavailable {
+  opacity: 0.5;
+}
+.plan.tool-layout-room {
+  cursor: crosshair;
+}
+.plan.tool-layout-door,
+.plan.tool-layout-window,
+.plan.tool-layout-slide {
+  cursor: copy;
+}
+.plan.tool-layout-select [data-opening] {
+  cursor: pointer;
+}
+.plan .furniture-locked {
+  opacity: 0.32;
+}
+.plan .room-size {
+  font-size: 130px;
+  fill: #9a7a5b;
+}
+.plan .room-draft rect {
+  fill: #bf693f1f;
+  stroke: #bf693f;
+  stroke-width: 2px;
+  stroke-dasharray: 8 6;
+}
+.plan .room-draft.blocked rect {
+  fill: #c0392b1a;
+  stroke: #c0392b;
+}
+.plan .room-draft.blocked .dimension {
+  fill: #c0392b;
+}
+.neighbour {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
+  font-size: 12px;
+}
+.neighbour small {
+  color: var(--muted);
+}
+.neighbour button {
+  font-size: 11px;
+  padding: 6px 8px;
+}
+.inspector button.wide.danger {
+  margin-top: 4px;
+}
+.inspector .two-fields > button {
+  font-size: 11px;
+  padding: 8px 6px;
+}
+
+/* Template dialog */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #302d2759;
+}
+.modal {
+  width: min(880px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: 22px 24px;
+  background: #fffdf9;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px #302d2733;
+}
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+.modal-head small {
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: var(--muted);
+}
+.modal-head h2 {
+  margin: 4px 0 6px;
+  font-family: Georgia, serif;
+  font-weight: 400;
+  font-size: 26px;
+}
+.modal .modal-close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+.modal h3 {
+  margin: 18px 0 10px;
+  font-size: 12px;
+  color: #70675b;
+}
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+}
+.template-card {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  width: 100%;
+  padding: 10px;
+  text-align: left;
+  border-radius: 10px;
+}
+.template-card.pending {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px #a65c3833;
+}
+.template-card b {
+  font-size: 13px;
+}
+.template-card small {
+  font-size: 11px;
+  color: #8f4e30;
+}
+.template-card span {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.plan-thumb {
+  width: 100%;
+  height: 110px;
+  margin-bottom: 4px;
+  background: #f7f4ee;
+  border-radius: 6px;
+}
+.saved-template {
+  display: grid;
+  gap: 6px;
+}
+.saved-template > button.danger {
+  font-size: 11px;
+  padding: 6px;
+}
+.save-template {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: end;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.save-template label {
+  margin: 0;
+}
+.save-template .checkbox {
+  margin-bottom: 10px;
+}
+.confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 4px;
+  padding: 10px 12px;
+  font-size: 12px;
+  background: #f4eadc;
+  border: 1px solid #dec7ab;
+  border-radius: 8px;
+  color: #6d4c31;
+}
+.confirm span {
+  flex: 1 1 260px;
+}
+@media (max-width: 560px) {
+  .modal-backdrop {
+    padding: 0;
+    place-items: stretch;
+  }
+  .modal {
+    border-radius: 0;
+    padding: 16px;
+  }
+  .template-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .save-template {
+    grid-template-columns: 1fr;
+  }
+}
+.opening-item {
+  display: block;
+  width: 100%;
+  margin: 4px 0;
+  font-size: 11px;
+  text-align: left;
+}

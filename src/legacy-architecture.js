@@ -1,10 +1,14 @@
 // Adapted from the original MIT-licensed app, copyright (c) 2026 wuyi.
 import * as THREE from 'three';
 import {floorMat,mat,box,metal} from './legacy-models';
-const wx=x=>(x-6000)/1000,wz=y=>(y-5300)/1000,M=v=>v/1000;
-export function buildArchitecture(project,cut=2.8) {
+import {windowSpec,DEFAULT_CEILING} from './project';
+const M=v=>v/1000;
+// origin: world origin in mm (the original apartment uses 6000, 5300); ceiling and window heights come from the plan.
+export function buildArchitecture(project,cut=2.8,origin=[6000,5300]) {
+const wx=x=>(x-origin[0])/1000,wz=y=>(y-origin[1])/1000;
 const {walls:WALLS,windows:WINS,doors:DOORS,slides:SLIDES,rooms:ROOMS}=project.geometry;
-const state=project,H=2.8,opt={cut,mode:'orbit'},archFloor=new THREE.Group(),archUp=new THREE.Group(),lampG=new THREE.Group(),doors=[];let colliders=[];
+const drawn=!!project.geometry.layout;
+const state=project,H=(project.geometry.ceiling??DEFAULT_CEILING)/1000,opt={cut,mode:'orbit'},archFloor=new THREE.Group(),archUp=new THREE.Group(),lampG=new THREE.Group(),doors=[];let colliders=[];
 const wallMat=mat('#f4f1eb',{roughness:.92}),capMat=mat('#34312d',{roughness:.9}),glassMat=new THREE.MeshPhysicalMaterial({color:0xcfe6ef,roughness:.05,transparent:true,opacity:.28,depthWrite:false,side:THREE.DoubleSide}),frameMat=mat('#5d6166',{roughness:.5,metalness:.4});
 
 function clearGroup(g){ g.traverse(o => { if (o.geometry) o.geometry.dispose(); }); g.clear(); }
@@ -49,10 +53,10 @@ function buildArch(){
     colliders.push([wx(w[0]), wz(w[1]), wx(w[2]), wz(w[3])]);
   });
   // 门洞、飘窗洞口上方过梁
-  [...DOORS.map(d => [d.rect, 2.1]), ...SLIDES.map(s => [s.rect, s.v ? 2.4 : 2.1]), ...project.geometry.bayOpenings.map(r=>[r,2.4])]
+  [...DOORS.map(d => [d.rect, 2.1]), ...SLIDES.map(s => [s.rect, s.v || drawn ? 2.4 : 2.1]), ...project.geometry.bayOpenings.map(r=>[r,2.4])]
     .forEach(([r, h]) => { if (top > h) wallBox(r, h, top); });
   WINS.forEach((r, i) => {
-    const sill = i === 0 ? 1.4 : i >= 6 ? .45 : .9, head = 2.4;
+    const spec = windowSpec(project.geometry, i), sill = spec.sill/1000, head = spec.head/1000;
     wallBox(r, 0, Math.min(sill, top)); if (top > head) wallBox(r, head, top);
     colliders.push([wx(r[0]), wz(r[1]), wx(r[2]), wz(r[3])]);
     const gTop = Math.min(head, top); if (gTop <= sill) return;
@@ -75,7 +79,7 @@ function buildArch(){
     doors.push(door); archUp.add(pivot);
   });
   SLIDES.forEach(({rect:[x0, y0, x1, y1], v}) => {
-    const L = M(v ? y1-y0 : x1-x0), ph = Math.min(v ? 2.4 : 2.1, top), pl = L*.55;
+    const L = M(v ? y1-y0 : x1-x0), ph = Math.min(v || drawn ? 2.4 : 2.1, top), pl = L*.55;
     [[-1, -.02], [1, .02]].forEach(([s, off]) => {
       const c = s < 0 ? -L/2 + pl/2 : L/2 - pl/2, x = v ? wx((x0+x1)/2) + off : wx(x0) + L/2 + c, z = v ? wz(y0) + L/2 + c : wz((y0+y1)/2) + off;
       const p = new THREE.Mesh(new THREE.BoxGeometry(v ? .02 : pl, ph, v ? pl : .02), glassMat); p.position.set(x, ph/2, z); archUp.add(p);

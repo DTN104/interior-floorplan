@@ -12,7 +12,17 @@ import {
   setNightLighting,
 } from "./legacy-models";
 import { buildArchitecture } from "./legacy-architecture";
-import { Project, Furniture, names, bounds, pointIn } from "./project";
+import {
+  Project,
+  Furniture,
+  Point,
+  area,
+  bounds,
+  pointIn,
+  roomLabel,
+  sceneOrigin,
+  DEFAULT_CEILING,
+} from "./project";
 
 type Props = {
   project: Project;
@@ -34,6 +44,7 @@ export const getSceneMemory = () =>
 const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 function FurnitureModel({
   f,
+  origin,
   selected,
   onSelect,
   onMove,
@@ -43,6 +54,7 @@ function FurnitureModel({
   draggable,
 }: {
   f: Furniture;
+  origin: Point;
   selected: boolean;
   draggable: boolean;
   onSelect: Props["onSelect"];
@@ -104,7 +116,7 @@ function FurnitureModel({
   };
   return (
     <group
-      position={[(f.cx - 6000) / 1000, 0, (f.cy - 5300) / 1000]}
+      position={[(f.cx - origin[0]) / 1000, 0, (f.cy - origin[1]) / 1000]}
       rotation={[0, (-f.rot * Math.PI) / 180, 0]}
       onClick={(e) => {
         e.stopPropagation();
@@ -161,9 +173,16 @@ function World(props: Props) {
   const { gl, camera, scene } = useThree();
   const controls = useRef<any>(null);
   const [dragging, setDragging] = useState(false);
+  const origin = useMemo(() => sceneOrigin(p), [p.geometry]),
+    ceiling = (p.geometry.ceiling ?? DEFAULT_CEILING) / 1000;
   const arch = useMemo(
-    () => buildArchitecture(p, cut && cameraMode !== "walk" ? 1.1 : 2.8),
-    [p.geometry, p.rooms, p.demolished, cut, cameraMode],
+    () =>
+      buildArchitecture(
+        p,
+        cut && cameraMode !== "walk" ? 1.1 : ceiling,
+        origin,
+      ),
+    [p.geometry, p.rooms, p.demolished, cut, cameraMode, origin, ceiling],
   );
   useEffect(
     () => () => {
@@ -210,14 +229,17 @@ function World(props: Props) {
     const r = targetRoom && p.geometry.rooms.find((r) => r.id === targetRoom),
       b = r ? bounds(r.poly) : floorBounds;
     const center = new THREE.Vector3(
-        (b[0] + b[2]) / 2000 - 6,
+        (b[0] + b[2] - 2 * origin[0]) / 2000,
         0,
-        (b[1] + b[3]) / 2000 - 5.3,
+        (b[1] + b[3] - 2 * origin[1]) / 2000,
       ),
       span = Math.max(b[2] - b[0], b[3] - b[1]) / 1000;
     if (cameraMode === "walk") {
       const room =
           p.geometry.rooms.find((r) => r.id === "living") ??
+          [...p.geometry.rooms]
+            .filter((r) => r.counted !== false)
+            .sort((a, b) => area(b.poly) - area(a.poly))[0] ??
           p.geometry.rooms[0],
         poly = room.poly,
         box = bounds(poly);
@@ -226,7 +248,11 @@ function World(props: Props) {
         (box[1] + box[3]) / 2,
       ];
       if (!pointIn(poly, start)) start = room.at ?? poly[0];
-      camera.position.set(start[0] / 1000 - 6, 1.6, start[1] / 1000 - 5.3);
+      camera.position.set(
+        (start[0] - origin[0]) / 1000,
+        1.6,
+        (start[1] - origin[1]) / 1000,
+      );
       camera.lookAt(camera.position.x, 1.6, camera.position.z - 1);
     } else {
       camera.position
@@ -242,7 +268,7 @@ function World(props: Props) {
         controls.current.update();
       }
     }
-  }, [cameraMode, targetRoom, floorBounds, camera, p.geometry]);
+  }, [cameraMode, targetRoom, floorBounds, camera, p.geometry, origin]);
   const walk = useRef({
     keys: new Set<string>(),
     yaw: 0,
@@ -332,7 +358,10 @@ function World(props: Props) {
       dx = (side * Math.cos(w.yaw) - forward * Math.sin(w.yaw)) * speed,
       dz = (-forward * Math.cos(w.yaw) - side * Math.sin(w.yaw)) * speed;
     const blocked = (x: number, z: number) => {
-      const mm: [number, number] = [(x + 6) * 1000, (z + 5.3) * 1000];
+      const mm: [number, number] = [
+        x * 1000 + origin[0],
+        z * 1000 + origin[1],
+      ];
       return (
         ![
           ...p.geometry.rooms.map((r) => r.poly),
@@ -370,7 +399,17 @@ function World(props: Props) {
     if (!blocked(camera.position.x, camera.position.z + dz))
       camera.position.z += dz;
   });
-  const sunAngle = ((hour - 6) / 12) * Math.PI,
+  // The original 26 m shadow box, grown for larger drawn plans.
+  const shadowHalf = Math.max(
+      13,
+      Math.max(
+        floorBounds[2] - floorBounds[0],
+        floorBounds[3] - floorBounds[1],
+      ) /
+        2000 +
+        3,
+    ),
+    sunAngle = ((hour - 6) / 12) * Math.PI,
     az = Math.PI * (0.15 + ((hour - 6) / 12) * 0.7),
     el = Math.sin(sunAngle) * 1.05 + 0.15;
   useEffect(() => {
@@ -395,10 +434,10 @@ function World(props: Props) {
         intensity={night ? 0.05 : 1.4 + Math.sin(sunAngle) * 1.6}
         castShadow
         shadow-mapSize={[2048, 2048]}
-        shadow-camera-left={-13}
-        shadow-camera-right={13}
-        shadow-camera-top={13}
-        shadow-camera-bottom={-13}
+        shadow-camera-left={-shadowHalf}
+        shadow-camera-right={shadowHalf}
+        shadow-camera-top={shadowHalf}
+        shadow-camera-bottom={-shadowHalf}
         shadow-camera-far={60}
         shadow-bias={-0.0002}
       />
@@ -428,6 +467,7 @@ function World(props: Props) {
         <FurnitureModel
           key={f.id}
           f={f}
+          origin={origin}
           selected={props.selected === f.id}
           draggable={cameraMode !== "walk"}
           onSelect={props.onSelect}
@@ -446,18 +486,14 @@ function World(props: Props) {
               <Html
                 key={r.id}
                 position={[
-                  (b[0] + b[2]) / 2000 - 6,
+                  (b[0] + b[2] - 2 * origin[0]) / 2000,
                   0.03,
-                  (b[1] + b[3]) / 2000 - 5.3,
+                  (b[1] + b[3] - 2 * origin[1]) / 2000,
                 ]}
                 center
                 style={{ pointerEvents: "none" }}
               >
-                <span className="scene-label">
-                  {p.rooms[r.id]?.name === r.name
-                    ? (names[r.id] ?? r.name)
-                    : p.rooms[r.id]?.name}
-                </span>
+                <span className="scene-label">{roomLabel(p, r.id)}</span>
               </Html>
             );
           })}

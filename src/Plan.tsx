@@ -1,8 +1,24 @@
 import { useRef, useState, useEffect } from "react";
-import { Project, Point, names, bounds } from "./project";
+import { Project, Point, Rect, area, bounds, roomLabel } from "./project";
+import { isRectRoom, snapRect } from "./layout";
 import { furnSVG } from "./legacy-svg";
 import { buildDefs } from "./legacy-defs";
 export type EdgeDragPhase = "move" | "end" | "cancel";
+export type LayoutTool = "select" | "room" | "door" | "window" | "slide";
+export type RoomGesture =
+  | { kind: "move"; roomId: string; dx: number; dy: number }
+  | { kind: "draw"; rect: Rect };
+/** Editing a drawn plan: rooms are drawn, moved and resized on their own; openings are placed on walls. */
+export type PlanLayout = {
+  tool: LayoutTool;
+  selectedOpening: string | null;
+  /** Rectangle being drawn and whether it is currently invalid. */
+  draft: Rect | null;
+  draftError: boolean;
+  onGesture: (g: RoomGesture, phase: EdgeDragPhase) => void;
+  onPlace: (kind: "door" | "window" | "slide", at: Point) => void;
+  onSelectOpening: (id: string) => void;
+};
 type Props = {
   project: Project;
   /** Committed project: edge handles always refer to its room polygons. */
@@ -20,7 +36,7 @@ type Props = {
     phase: EdgeDragPhase,
   ) => void;
   selected: string | null;
-  kind: "room" | "furniture";
+  kind: "room" | "furniture" | "opening";
   onSelect: (id: string, kind: "room" | "furniture") => void;
   onMove: (id: string, x: number, y: number, finished: boolean) => void;
   onCancelMove: () => void;
@@ -31,6 +47,7 @@ type Props = {
   grid: boolean;
   fitKey: number;
   svgRef: React.RefObject<SVGSVGElement>;
+  layout: PlanLayout | null;
 };
 export function Plan({
   project: p,
@@ -49,6 +66,7 @@ export function Plan({
   grid,
   fitKey,
   svgRef,
+  layout,
 }: Props) {
   const all = p.geometry.rooms.flatMap((r) => r.poly),
     b = bounds(all);
@@ -81,6 +99,8 @@ export function Plan({
     tap: number;
     room: string | null;
     moved: boolean;
+    /** Layout mode: opening tool to use when this turns out to be a tap. */
+    place?: "door" | "window" | "slide";
   } | null>(null);
   // Dragging a room edge: the delta is measured perpendicular to the edge and snapped to 10 mm.
   const edge = useRef<{
@@ -90,12 +110,31 @@ export function Plan({
     start: number;
     pid: number;
     delta: number;
+    client: Point;
+    moved: boolean;
   } | null>(null);
+  // Drawing or moving a room in layout mode.
+  const gesture = useRef<{
+    kind: "move" | "draw";
+    roomId: string;
+    start: Point;
+    box: Rect;
+    pid: number;
+    client: Point;
+    moved: boolean;
+    last: RoomGesture | null;
+  } | null>(null);
+  // Snapping reach: about 12 screen pixels, in millimetres.
+  const reach = () => {
+    const w = svgRef.current?.clientWidth || 1000;
+    return Math.min(400, Math.max(20, (view.w / w) * 12));
+  };
   useEffect(() => {
-    const pid = drag.current?.pid ?? edge.current?.pid;
+    const pid = drag.current?.pid ?? edge.current?.pid ?? gesture.current?.pid;
     drag.current = null;
     pan.current = null;
     edge.current = null;
+    gesture.current = null;
     const svg = svgRef.current;
     if (pid !== undefined && svg?.hasPointerCapture(pid))
       svg.releasePointerCapture(pid);
@@ -108,6 +147,19 @@ export function Plan({
     return [Math.round(pt.x), Math.round(pt.y)];
   };
   const finish = (e: React.PointerEvent<SVGSVGElement>) => {
+    const gs = gesture.current;
+    if (gs) {
+      if (gs.pid !== e.pointerId) return;
+      gesture.current = null;
+      if (e.currentTarget.hasPointerCapture(e.pointerId))
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      // A tap without movement neither moves a room nor draws one.
+      layout?.onGesture(
+        gs.last ?? { kind: "draw", rect: [...gs.box] },
+        gs.moved && gs.last ? "end" : "cancel",
+      );
+      return;
+    }
     const d = drag.current,
       tap = pan.current,
       ed = edge.current;
@@ -122,8 +174,10 @@ export function Plan({
     if (d && d.pid !== e.pointerId) return;
     drag.current = null;
     pan.current = null;
-    if (!d && tap?.room && !tap.moved && tap.pid === e.pointerId)
-      onSelect(tap.room, "room");
+    if (!d && tap && !tap.moved && tap.pid === e.pointerId) {
+      if (tap.place) layout?.onPlace(tap.place, tap.start);
+      else if (tap.room) onSelect(tap.room, "room");
+    }
     if (d) {
       onMove(
         d.id,
@@ -136,6 +190,15 @@ export function Plan({
     }
   };
   const cancel = (e: React.PointerEvent<SVGSVGElement>) => {
+    const gs = gesture.current;
+    if (gs) {
+      if (gs.pid !== e.pointerId) return;
+      gesture.current = null;
+      if (e.currentTarget.hasPointerCapture(e.pointerId))
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      layout?.onGesture(gs.last ?? { kind: "draw", rect: [...gs.box] }, "cancel");
+      return;
+    }
     const ed = edge.current;
     if (ed) {
       if (ed.pid !== e.pointerId) return;
@@ -156,7 +219,7 @@ export function Plan({
   return (
     <svg
       ref={svgRef}
-      className={"plan tool-" + tool}
+      className={"plan tool-" + (layout ? "layout-" + layout.tool : tool)}
       viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
       aria-label="Bản vẽ 2D"
       onWheel={(e) => {
@@ -173,6 +236,59 @@ export function Plan({
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         const at = local(e);
+        if (layout) {
+          const target = e.target as Element;
+          if (layout.tool === "room") {
+            gesture.current = {
+              kind: "draw",
+              roomId: "",
+              start: at,
+              box: [at[0], at[1], at[0], at[1]],
+              pid: e.pointerId,
+              client: [e.clientX, e.clientY],
+              moved: false,
+              last: null,
+            };
+            e.currentTarget.setPointerCapture(e.pointerId);
+            return;
+          }
+          if (layout.tool !== "select") {
+            // A tap places the opening on the wall under it; a drag pans the view.
+            pan.current = {
+              start: at,
+              view,
+              pid: e.pointerId,
+              client: [e.clientX, e.clientY],
+              tap: e.pointerType === "mouse" ? 4 : 9,
+              room: null,
+              moved: false,
+              place: layout.tool,
+            };
+            e.currentTarget.setPointerCapture(e.pointerId);
+            return;
+          }
+          const opening = target.closest("[data-opening]")?.getAttribute("data-opening");
+          if (opening) {
+            layout.onSelectOpening(opening);
+            return;
+          }
+          const roomId = target.closest("[data-room]")?.getAttribute("data-room");
+          const room = roomId && kind === "room" && selected === roomId && base.geometry.rooms.find((r) => r.id === roomId);
+          if (room) {
+            gesture.current = {
+              kind: "move",
+              roomId: room.id,
+              start: at,
+              box: bounds(room.poly),
+              pid: e.pointerId,
+              client: [e.clientX, e.clientY],
+              moved: false,
+              last: null,
+            };
+            e.currentTarget.setPointerCapture(e.pointerId);
+            return;
+          }
+        }
         if (tool === "measure") {
           if (measure) {
             onMeasure(measure, at);
@@ -199,10 +315,83 @@ export function Plan({
       onPointerMove={(e) => {
         const at = local(e),
           d = drag.current,
-          ed = edge.current;
+          ed = edge.current,
+          gs = gesture.current;
+        if (gs) {
+          if (gs.pid !== e.pointerId) return;
+          if (
+            !gs.moved &&
+            Math.hypot(e.clientX - gs.client[0], e.clientY - gs.client[1]) <
+              (e.pointerType === "mouse" ? 4 : 9)
+          )
+            return;
+          gs.moved = true;
+          let next: RoomGesture;
+          if (gs.kind === "move") {
+            const b = gs.box,
+              dx = at[0] - gs.start[0],
+              dy = at[1] - gs.start[1],
+              snapped = snapRect(
+                base,
+                [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy],
+                gs.roomId,
+                { x0: true, x1: true, y0: true, y1: true },
+                reach(),
+                true,
+              );
+            next = { kind: "move", roomId: gs.roomId, dx: snapped[0] - b[0], dy: snapped[1] - b[1] };
+          } else {
+            // Every side snaps for the side it is now, so dragging left or up works like right or down.
+            const [sx, sy] = gs.start,
+              rect = snapRect(
+                base,
+                [Math.min(sx, at[0]), Math.min(sy, at[1]), Math.max(sx, at[0]), Math.max(sy, at[1])],
+                null,
+                { x0: true, x1: true, y0: true, y1: true },
+                reach(),
+              );
+            gs.box = rect;
+            next = { kind: "draw", rect };
+          }
+          const same =
+            gs.last &&
+            JSON.stringify(gs.last) === JSON.stringify(next);
+          if (!same) {
+            gs.last = next;
+            layout?.onGesture(next, "move");
+          }
+          return;
+        }
         if (ed) {
           if (ed.pid !== e.pointerId) return;
-          const delta = Math.round((at[ed.axis] - ed.start) / 10) * 10;
+          let delta = Math.round((at[ed.axis] - ed.start) / 10) * 10;
+          // Layout mode resizes only this room: once the pointer really moves, its side also snaps to the
+          // neighbouring rooms (no snap without movement, so pressing a handle never changes the room).
+          if (layout && !ed.moved) {
+            if (
+              Math.hypot(e.clientX - ed.client[0], e.clientY - ed.client[1]) <
+              (e.pointerType === "mouse" ? 4 : 9)
+            )
+              return;
+            ed.moved = true;
+          }
+          const room =
+            layout && delta !== 0 && base.geometry.rooms.find((r) => r.id === ed.roomId);
+          if (room) {
+            const b = bounds(room.poly),
+              c = room.poly[ed.index][ed.axis],
+              k = (c === b[ed.axis] ? ed.axis : ed.axis + 2) as 0 | 1 | 2 | 3,
+              moved: Rect = [...b];
+            moved[k] += delta;
+            const snapped = snapRect(
+              base,
+              moved,
+              room.id,
+              { x0: k === 0, y0: k === 1, x1: k === 2, y1: k === 3 },
+              reach(),
+            );
+            delta = snapped[k] - b[k];
+          }
           if (delta !== ed.delta) {
             ed.delta = delta;
             onEdgeDrag(ed.roomId, ed.index, delta, "move");
@@ -293,20 +482,21 @@ export function Plan({
         />
       ))}
       {[
-        ...p.geometry.windows,
-        ...p.geometry.slides.map((s) => s.rect),
-        ...p.geometry.bayOpenings,
-      ].map((r, i) => (
+        ...p.geometry.windows.map((r, i) => ({ id: "window-" + i, r })),
+        ...p.geometry.slides.map((s) => ({ id: s.id, r: s.rect })),
+        ...p.geometry.bayOpenings.map((r, i) => ({ id: "bay-" + i, r })),
+      ].map(({ id, r }) => (
         <rect
-          key={i}
+          key={id}
+          data-opening={layout && !id.startsWith("bay-") ? id : undefined}
           x={r[0]}
           y={r[1]}
           width={r[2] - r[0]}
           height={r[3] - r[1]}
           fill="#a8c7cb"
           fillOpacity={0.45}
-          stroke="#668f96"
-          strokeWidth={15}
+          stroke={layout?.selectedOpening === id ? "#bf693f" : "#668f96"}
+          strokeWidth={layout?.selectedOpening === id ? 45 : 15}
         />
       ))}
       {p.geometry.doors.map((d) => {
@@ -318,8 +508,27 @@ export function Plan({
             d.h[0] + d.c[0] * d.len,
             d.h[1] + d.c[1] * d.len,
           ];
+        const chosen = layout?.selectedOpening === d.id;
         return (
-          <g key={d.id} fill="none" stroke="#9c7753" strokeWidth={20}>
+          <g
+            key={d.id}
+            data-opening={layout ? d.id : undefined}
+            fill="none"
+            stroke={chosen ? "#bf693f" : "#9c7753"}
+            strokeWidth={chosen ? 32 : 20}
+          >
+            {layout && (
+              <rect
+                className="opening-hit"
+                x={d.rect[0]}
+                y={d.rect[1]}
+                width={d.rect[2] - d.rect[0]}
+                height={d.rect[3] - d.rect[1]}
+                fill="#f4d9a0"
+                fillOpacity={chosen ? 0.9 : 0.55}
+                strokeWidth={chosen ? 30 : 8}
+              />
+            )}
             <path
               d={`M${closed.join(" ")} Q${closed[0] + d.o[0] * d.len} ${closed[1] + d.o[1] * d.len} ${end.join(" ")}`}
               strokeDasharray="40 25"
@@ -329,6 +538,10 @@ export function Plan({
           </g>
         );
       })}
+      <g
+        className={layout ? "furniture-locked" : undefined}
+        pointerEvents={layout ? "none" : undefined}
+      >
       {p.furniture.map((f) => (
         <g
           key={f.id}
@@ -372,24 +585,35 @@ export function Plan({
           )}
         </g>
       ))}
+      </g>
       {p.geometry.rooms
         .filter((r) => r.counted !== false)
         .map((r) => {
           const box = bounds(r.poly),
             at = r.at ?? [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2];
           return (
-            <text
-              key={r.id}
-              x={at[0]}
-              y={at[1]}
-              textAnchor="middle"
-              className="room-label"
-              pointerEvents="none"
-            >
-              {p.rooms[r.id].name === r.name
-                ? (names[r.id] ?? r.name)
-                : p.rooms[r.id].name}
-            </text>
+            <g key={r.id} pointerEvents="none">
+              <text
+                x={at[0]}
+                y={at[1]}
+                textAnchor="middle"
+                className="room-label"
+              >
+                {roomLabel(p, r.id)}
+              </text>
+              {layout && (
+                <text
+                  x={at[0]}
+                  y={at[1] + 260}
+                  textAnchor="middle"
+                  className="room-size"
+                >
+                  {isRectRoom(r)
+                    ? `${box[2] - box[0]} × ${box[3] - box[1]}`
+                    : `${area(r.poly).toFixed(1)} m²`}
+                </text>
+              )}
+            </g>
           );
         })}
       {kind === "room" &&
@@ -413,7 +637,9 @@ export function Plan({
           })}
       {kind === "room" &&
         tool === "select" &&
+        (!layout || layout.tool === "select") &&
         base.geometry.rooms
+          .filter((r) => !layout || isRectRoom(r))
           .find((r) => r.id === selected)
           ?.poly.map((a, i, poly) => {
             const q = poly[(i + 1) % poly.length],
@@ -452,6 +678,18 @@ export function Plan({
                   onPointerDown={(e) => {
                     if (e.button !== 0 || drag.current || edge.current) return;
                     e.stopPropagation();
+                    // A door or window under the handle takes the press: it is selected, not dragged.
+                    const opening = layout
+                      ? document
+                          .elementsFromPoint(e.clientX, e.clientY)
+                          .find((el) => el.closest("[data-opening]"))
+                          ?.closest("[data-opening]")
+                          ?.getAttribute("data-opening")
+                      : null;
+                    if (opening) {
+                      layout!.onSelectOpening(opening);
+                      return;
+                    }
                     edge.current = {
                       roomId: selected!,
                       index: i,
@@ -459,6 +697,8 @@ export function Plan({
                       start: local(e)[axis],
                       pid: e.pointerId,
                       delta: 0,
+                      client: [e.clientX, e.clientY],
+                      moved: false,
                     };
                     svgRef.current!.setPointerCapture(e.pointerId);
                   }}
@@ -512,6 +752,25 @@ export function Plan({
       ))}
       {measure && (
         <circle cx={measure[0]} cy={measure[1]} r={70} fill="#b65039" />
+      )}
+      {layout?.draft && (
+        <g pointerEvents="none" className={"room-draft" + (layout.draftError ? " blocked" : "")}>
+          <rect
+            x={layout.draft[0]}
+            y={layout.draft[1]}
+            width={layout.draft[2] - layout.draft[0]}
+            height={layout.draft[3] - layout.draft[1]}
+            vectorEffect="non-scaling-stroke"
+          />
+          <text
+            x={(layout.draft[0] + layout.draft[2]) / 2}
+            y={(layout.draft[1] + layout.draft[3]) / 2}
+            textAnchor="middle"
+            className="dimension"
+          >
+            {layout.draft[2] - layout.draft[0]} × {layout.draft[3] - layout.draft[1]}
+          </text>
+        </g>
       )}
     </svg>
   );

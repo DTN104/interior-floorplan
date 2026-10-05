@@ -13,11 +13,12 @@ const Scene = React.lazy(() =>
 );
 
 import { Plan } from "./Plan";
-import type { EdgeDragPhase } from "./Plan";
+import type { EdgeDragPhase, LayoutTool, RoomGesture } from "./Plan";
 import {
   Project,
   Furniture,
   Point,
+  Rect,
   ResizeResult,
   clone,
   loadProject,
@@ -25,7 +26,7 @@ import {
   STORAGE_KEY,
   area,
   bounds,
-  names,
+  roomLabel,
   materials,
   itemNames,
   resizeRoom,
@@ -37,6 +38,23 @@ import {
   openingName,
 } from "./project";
 import { LIB, MATS } from "./legacy-data";
+import {
+  LayoutResult,
+  moveRoom,
+  addRoom,
+  setRoomRect,
+  addOpening,
+  hitEdge,
+  sideAxis,
+} from "./layout";
+import {
+  LayoutSettingsSection,
+  LayoutRoomSection,
+  OpeningSection,
+  TemplateDialog,
+  LayoutRun,
+} from "./LayoutPanel";
+import { NumberField } from "./fields";
 import "./style.css";
 class SceneBoundary extends Component<
   { children: ReactNode },
@@ -57,45 +75,6 @@ class SceneBoundary extends Component<
     );
   }
 }
-function NumberField({
-  label,
-  value,
-  onChange,
-  min = 0,
-  onInvalid,
-}: {
-  label: string;
-  value: number;
-  onChange: (v: number) => void;
-  min?: number;
-  onInvalid?: () => void;
-}) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(value)), [value]);
-  return (
-    <label>
-      {label}
-      <input
-        type="number"
-        min={min}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") e.currentTarget.blur();
-        }}
-        onBlur={() => {
-          const v = draft.trim() ? Number(draft) : NaN;
-          if (Number.isFinite(v) && v >= min) {
-            if (v !== value) onChange(v);
-          } else {
-            setDraft(String(value));
-            onInvalid?.();
-          }
-        }}
-      />
-    </label>
-  );
-}
 function download(name: string, blob: Blob) {
   const url = URL.createObjectURL(blob),
     a = document.createElement("a");
@@ -108,12 +87,16 @@ function shiftedOpenings(result: ResizeResult) {
   return result.openings
     .map(
       (o) =>
-        openingName(o.id) +
+        openingName(result.project, o.id) +
         (o.shift ? ` ${o.shift > 0 ? "+" : "−"}${Math.abs(o.shift)} mm` : "") +
         (o.narrowed ? ` (hẹp lại ${o.narrowed} mm)` : ""),
     )
     .join(" · ");
 }
+/** The master bedroom of the original apartment, otherwise the first room of the plan. */
+const firstRoom = (p: Project) =>
+  p.geometry.rooms.find((r) => r.id === "master")?.id ??
+  p.geometry.rooms[0].id;
 type EdgeDrag = {
   roomId: string;
   index: number;
@@ -121,6 +104,43 @@ type EdgeDrag = {
   /** Last accepted result while dragging; kept when the pointer goes past what the plan allows. */
   result: ResizeResult | null;
   error: string;
+  /** Layout mode: openings the resize removed. */
+  note?: string;
+};
+/** Moving or drawing a room in layout mode; `result` is the last valid plan. */
+type LayoutDrag = {
+  gesture: RoomGesture;
+  result: LayoutResult | null;
+  error: string;
+};
+const openingKinds = { door: "cửa đi", window: "cửa sổ", slide: "cửa trượt" };
+const droppedText = (r: LayoutResult) =>
+  [
+    r.dropped.length
+      ? `Đã bỏ ${r.dropped.length} cửa không còn nằm trên tường (${r.dropped
+          .map((o) => openingKinds[o.kind])
+          .join(", ")}).`
+      : "",
+    r.restored
+      ? `Dựng lại ${r.restored} đoạn tường đã phá vì tường ở đó đã thay đổi.`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+const layoutTools: [LayoutTool, string][] = [
+  ["select", "↖ Chọn"],
+  ["room", "▭ Vẽ phòng"],
+  ["door", "Cửa đi"],
+  ["window", "Cửa sổ"],
+  ["slide", "Cửa trượt"],
+];
+const layoutHints: Record<LayoutTool, string> = {
+  select:
+    "Bấm chọn phòng hoặc cửa · Kéo phòng đang chọn để di chuyển · Kéo tay nắm để đổi kích thước",
+  room: "Kéo để vẽ phòng theo kích thước thông thủy · Phòng tự hít vào phòng bên cạnh",
+  door: "Bấm lên tường để đặt cửa đi",
+  window: "Bấm lên tường để đặt cửa sổ",
+  slide: "Bấm lên tường để đặt cửa trượt",
 };
 function App() {
   const [boot] = useState(() => loadProject()),
@@ -143,8 +163,10 @@ function App() {
     [edgeDrag, setEdgeDrag] = useState<EdgeDrag | null>(null),
     [lastChange, setLastChange] = useState(""),
     [dragKey, setDragKey] = useState(0),
-    [selected, setSelected] = useState<string | null>("master"),
-    [kind, setKind] = useState<"room" | "furniture">("room"),
+    [selected, setSelected] = useState<string | null>(() =>
+      firstRoom(boot.project),
+    ),
+    [kind, setKind] = useState<"room" | "furniture" | "opening">("room"),
     [mode, setMode] = useState<"2d" | "3d">("2d"),
     [tool, setTool] = useState<"select" | "measure" | "demolish">("select"),
     [error, setError] = useState(""),
@@ -162,19 +184,33 @@ function App() {
     [grid, setGrid] = useState(false),
     [fitKey, setFitKey] = useState(0),
     [libraryOpen, setLibraryOpen] = useState(false),
-    [snap, setSnap] = useState(true);
+    [snap, setSnap] = useState(true),
+    [layoutMode, setLayoutMode] = useState(false),
+    [layoutTool, setLayoutTool] = useState<LayoutTool>("select"),
+    [layoutDrag, setLayoutDrag] = useState<LayoutDrag | null>(null),
+    [templatesOpen, setTemplatesOpen] = useState(false);
   const exportReady = useCallback((fn: () => void) => {
     pngRef.current = fn;
   }, []);
   const p = history.present,
+    drawn = !!p.geometry.layout,
+    // Layout mode applies to drawn plans in 2D only.
+    editing = layoutMode && drawn && mode === "2d",
     live = edgeDrag?.result ?? preview,
-    display = edgeDrag?.result?.project ?? preview?.project ?? transient ?? p,
+    display =
+      layoutDrag?.result?.project ??
+      edgeDrag?.result?.project ??
+      preview?.project ??
+      transient ??
+      p,
     svgRef = useRef<SVGSVGElement>(null),
     fileRef = useRef<HTMLInputElement>(null),
     pngRef = useRef<() => void>(() => {}),
     dragBase = useRef<Project | null>(null),
     edgeState = useRef<EdgeDrag | null>(null),
     edgeFrame = useRef(0),
+    layoutState = useRef<LayoutDrag | null>(null),
+    layoutFrame = useRef(0),
     // Unreadable saved data must not be overwritten before the user makes a change.
     holdAutosave = useRef(boot.notice !== "");
   const cancelDrag = useCallback(() => {
@@ -184,8 +220,15 @@ function App() {
     edgeFrame.current = 0;
     edgeState.current = null;
     setEdgeDrag(null);
+    cancelAnimationFrame(layoutFrame.current);
+    layoutFrame.current = 0;
+    layoutState.current = null;
+    setLayoutDrag(null);
     setDragKey((key) => key + 1);
   }, []);
+  useEffect(() => {
+    if (!drawn) setLayoutMode(false);
+  }, [drawn]);
   useEffect(() => cancelDrag, [mode, cancelDrag]);
   const commit = useCallback((next: Project) => {
     cancelDrag();
@@ -202,6 +245,31 @@ function App() {
     const prev = edgeState.current;
     if (!delta) return { roomId, index, delta, result: null, error: "" };
     try {
+      if (editing) {
+        // Layout mode: only this room changes; walls are generated again around it.
+        const room = p.geometry.rooms.find((r) => r.id === roomId)!,
+          b = bounds(room.poly),
+          a = room.poly[index],
+          q = room.poly[(index + 1) % room.poly.length],
+          axis = a[0] === q[0] ? 0 : 1,
+          k = a[axis] === b[axis] ? axis : axis + 2,
+          next = [...b] as Rect;
+        next[k] += delta;
+        const res = setRoomRect(p, roomId, next);
+        return {
+          roomId,
+          index,
+          delta,
+          result: {
+            project: res.project,
+            affected: [roomId],
+            warnings: furnitureWarnings(res.project),
+            openings: [],
+          },
+          error: "",
+          note: droppedText(res),
+        };
+      }
       return {
         roomId,
         index,
@@ -210,12 +278,14 @@ function App() {
         error: "",
       };
     } catch (e) {
+      const same = prev?.roomId === roomId && prev.index === index;
       return {
         roomId,
         index,
         delta,
-        result: prev?.roomId === roomId && prev.index === index ? prev.result : null,
+        result: same ? prev.result : null,
         error: e instanceof Error ? e.message : "Không thể đổi kích thước.",
+        note: same ? prev.note : undefined,
       };
     }
   };
@@ -259,18 +329,87 @@ function App() {
       result.affected
         .map(
           (id) =>
-            `${names[id] ?? id} ${area(p.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} → ${area(result.project.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} m²`,
+            `${roomLabel(p, id)} ${area(p.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} → ${area(result.project.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} m²`,
         )
         .join(" · ") +
       (result.openings.length ? ` · Dịch dọc tường: ${shiftedOpenings(result)}` : "");
     commit(result.project);
     setLastChange(
-      final.error
+      (final.error
         ? `${summary}. Dừng ở vị trí hợp lệ gần nhất (${final.error.replace(/\.$/, "")}).`
-        : summary,
+        : summary) + (final.note ? " " + final.note : ""),
     );
   };
-  const select = useCallback((id: string, k: "room" | "furniture") => {
+  // Layout mode: moving a room or drawing a new one is previewed live (once per frame) and applied on
+  // release as one undo entry. A move past what the plan allows stops at the last valid position.
+  const layoutStep = (g: RoomGesture): LayoutDrag => {
+    const prev = layoutState.current;
+    try {
+      if (g.kind === "move" && !g.dx && !g.dy)
+        return { gesture: g, result: null, error: "" };
+      return {
+        gesture: g,
+        result:
+          g.kind === "move"
+            ? moveRoom(p, g.roomId, g.dx, g.dy)
+            : addRoom(p, g.rect),
+        error: "",
+      };
+    } catch (e) {
+      return {
+        gesture: g,
+        result:
+          g.kind === "move" &&
+          prev?.gesture.kind === "move" &&
+          prev.gesture.roomId === g.roomId
+            ? prev.result
+            : null,
+        error: e instanceof Error ? e.message : "Không thể chỉnh mặt bằng.",
+      };
+    }
+  };
+  const onLayoutGesture = (g: RoomGesture, phase: EdgeDragPhase) => {
+    if (phase === "cancel") {
+      cancelDrag();
+      return;
+    }
+    if (phase === "move") {
+      layoutState.current = {
+        ...(layoutState.current ?? { result: null, error: "" }),
+        gesture: g,
+      };
+      if (!layoutFrame.current)
+        layoutFrame.current = requestAnimationFrame(() => {
+          layoutFrame.current = 0;
+          const job = layoutState.current;
+          if (!job) return;
+          layoutState.current = layoutStep(job.gesture);
+          setLayoutDrag(layoutState.current);
+        });
+      return;
+    }
+    cancelAnimationFrame(layoutFrame.current);
+    layoutFrame.current = 0;
+    const final = layoutStep(g),
+      result = g.kind === "draw" && final.error ? null : final.result;
+    if (!result) {
+      cancelDrag();
+      if (final.error) setError(final.error);
+      return;
+    }
+    commit(result.project);
+    if (result.id) select(result.id, "room");
+    setLastChange(
+      (g.kind === "draw"
+        ? `Đã thêm ${result.project.rooms[result.id!].name}.`
+        : "Đã di chuyển phòng.") +
+        (final.error
+          ? ` Dừng ở vị trí hợp lệ gần nhất (${final.error.replace(/\.$/, "")}).`
+          : "") +
+        (droppedText(result) ? " " + droppedText(result) : ""),
+    );
+  };
+  const select = useCallback((id: string, k: "room" | "furniture" | "opening") => {
     setResizeSuggestion(null);
     setSelected(id);
     setKind(k);
@@ -322,8 +461,14 @@ function App() {
       setSaveState("Không thể autosave — hãy xuất JSON");
     }
   }, [p]);
+  const dialogOpen = useRef(false);
+  dialogOpen.current = templatesOpen;
   useEffect(() => {
     const fn = (e: KeyboardEvent) => {
+      if (dialogOpen.current) {
+        if (e.key === "Escape") setTemplatesOpen(false);
+        return;
+      }
       if ((e.target as HTMLElement).matches("input,select,textarea")) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
@@ -336,7 +481,9 @@ function App() {
         setPreview(null);
         setTransient(null);
         setTool("select");
+        setLayoutTool("select");
         setLibraryOpen(false);
+        setTemplatesOpen(false);
       }
       if (e.key.toLowerCase() === "t")
         setMode((m) => (m === "2d" ? "3d" : "2d"));
@@ -384,6 +531,28 @@ function App() {
         e instanceof Error ? e.message : "Thông số nội thất không hợp lệ.",
       );
     }
+  };
+  // Layout operations from the panel: one undo entry each; openings that no longer fit are reported.
+  const runLayout: LayoutRun = (fn, after) => {
+    try {
+      const r = fn();
+      commit(r.project);
+      after?.(r);
+      setLastChange(droppedText(r));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Không thể chỉnh mặt bằng.");
+    }
+  };
+  const placeOpening = (k: "door" | "window" | "slide", at: Point) => {
+    const face = hitEdge(p, at);
+    if (!face) {
+      setError("Bấm lên tường của một phòng để đặt cửa.");
+      return;
+    }
+    runLayout(
+      () => addOpening(p, k, face, at[1 - sideAxis(face.side)]),
+      (r) => select(r.id!, "opening"),
+    );
   };
   const room = p.geometry.rooms.find((r) => r.id === selected),
     furniture = p.furniture.find((f) => f.id === selected),
@@ -465,7 +634,11 @@ function App() {
     );
   };
   const add = (item: (string | number)[]) => {
-    const id = crypto.randomUUID(),
+    // New furniture lands in the selected room. Drawn plans round to 10 mm and fall back to the middle of
+    // the plan; the original apartment keeps its source behaviour.
+    const at = box ?? bounds(p.geometry.rooms.flatMap((r) => r.poly)),
+      drawnPlan = !!p.geometry.layout,
+      id = crypto.randomUUID(),
       f: Furniture = {
         id,
         type: String(item[0]),
@@ -473,8 +646,16 @@ function App() {
         w: Number(item[2]),
         d: Number(item[3]),
         color: String(item[4]),
-        cx: box ? (box[0] + box[2]) / 2 : 7600,
-        cy: box ? (box[1] + box[3]) / 2 : 8500,
+        cx: drawnPlan
+          ? Math.round((at[0] + at[2]) / 20) * 10
+          : box
+            ? (box[0] + box[2]) / 2
+            : 7600,
+        cy: drawnPlan
+          ? Math.round((at[1] + at[3]) / 20) * 10
+          : box
+            ? (box[1] + box[3]) / 2
+            : 8500,
         rot: 0,
         modelSeed: Math.round(
           Number(item[2]) * 7 + Number(item[3]) * 13 + 7600 + 8500,
@@ -563,6 +744,15 @@ function App() {
             title="Làm lại"
           >
             ↷
+          </button>
+          <button
+            onClick={() => {
+              cancelDrag();
+              setTemplatesOpen(true);
+            }}
+            title="Chọn mẫu mặt bằng hoặc lưu phương án làm mẫu"
+          >
+            Mẫu
           </button>
           <button onClick={() => fileRef.current?.click()}>Nhập JSON</button>
           <button onClick={exportPng}>Ảnh PNG</button>
@@ -712,8 +902,60 @@ function App() {
           >
             ＋ Nội thất
           </button>
-          {mode === "2d" ? (
+          {mode === "2d" && editing ? (
             <>
+              {layoutTools.map(([t, label]) => (
+                <button
+                  key={t}
+                  className={layoutTool === t ? "active" : ""}
+                  onClick={() => setLayoutTool(t)}
+                >
+                  {label}
+                </button>
+              ))}
+              <button
+                onClick={() => setGrid((v) => !v)}
+                className={grid ? "active" : ""}
+              >
+                Lưới
+              </button>
+              <button onClick={() => setFitKey((k) => k + 1)}>Vừa khung</button>
+              <button
+                className="primary"
+                onClick={() => {
+                  cancelDrag();
+                  setLayoutMode(false);
+                  if (kind === "opening") select(firstRoom(p), "room");
+                }}
+              >
+                ✓ Xong
+              </button>
+            </>
+          ) : mode === "2d" ? (
+            <>
+              <button
+                className={"layout-toggle" + (drawn ? "" : " unavailable")}
+                title={
+                  drawn
+                    ? "Vẽ phòng, di chuyển phòng, đặt cửa"
+                    : "Căn hộ gốc không vẽ lại phòng được. Chọn Mẫu → Mặt bằng trống hoặc mẫu tự vẽ."
+                }
+                onClick={() => {
+                  if (!drawn) {
+                    setError(
+                      "Căn hộ gốc không vẽ lại phòng được (có khối chịu lực đặc thù). Chọn Mẫu → Mặt bằng trống hoặc một mẫu tự vẽ.",
+                    );
+                    return;
+                  }
+                  cancelDrag();
+                  setPreview(null);
+                  setTool("select");
+                  setLayoutTool("select");
+                  setLayoutMode(true);
+                }}
+              >
+                ✎ Sửa mặt bằng
+              </button>
               <button
                 className={tool === "select" ? "active" : ""}
                 onClick={() => setTool("select")}
@@ -814,10 +1056,26 @@ function App() {
                     : [...p.demolished, id],
                 });
               }}
-              tool={tool}
+              tool={editing ? "select" : tool}
               grid={grid}
               fitKey={fitKey}
               svgRef={svgRef}
+              layout={
+                editing
+                  ? {
+                      tool: layoutTool,
+                      selectedOpening: kind === "opening" ? selected : null,
+                      draft:
+                        layoutDrag?.gesture.kind === "draw"
+                          ? layoutDrag.gesture.rect
+                          : null,
+                      draftError: !!layoutDrag?.error,
+                      onGesture: onLayoutGesture,
+                      onPlace: placeOpening,
+                      onSelectOpening: (id) => select(id, "opening"),
+                    }
+                  : null
+              }
             />
           ) : (
             <SceneBoundary>
@@ -850,11 +1108,19 @@ function App() {
               ? "ĐANG XEM TRƯỚC · CHƯA LƯU"
               : edgeDrag
                 ? "ĐANG KÉO CẠNH · THẢ ĐỂ ÁP DỤNG · ESC ĐỂ HỦY"
-              : "CĂN HỘ MẶC ĐỊNH · ĐƠN VỊ MM"}
+                : layoutDrag
+                  ? layoutDrag.gesture.kind === "draw"
+                    ? "ĐANG VẼ PHÒNG · THẢ ĐỂ THÊM · ESC ĐỂ HỦY"
+                    : "ĐANG DI CHUYỂN PHÒNG · THẢ ĐỂ ÁP DỤNG · ESC ĐỂ HỦY"
+                  : editing
+                    ? "SỬA MẶT BẰNG · KÍCH THƯỚC THÔNG THỦY (MM)"
+                    : `${(p.name ?? "Căn hộ mặc định").toUpperCase()} · ĐƠN VỊ MM`}
           </span>
           <small>
             {mode === "2d"
-              ? "Chọn phòng rồi kéo cạnh để đổi kích thước · Kéo nội thất · Cuộn để zoom · Kéo nền để di chuyển"
+              ? editing
+                ? layoutHints[layoutTool]
+                : "Chọn phòng rồi kéo cạnh để đổi kích thước · Kéo nội thất · Cuộn để zoom · Kéo nền để di chuyển"
               : "Kéo nội thất · Kéo nền để xoay · Cuộn để zoom"}
           </small>
         </div>
@@ -879,7 +1145,7 @@ function App() {
                 {preview.affected
                   .map(
                     (id) =>
-                      `${names[id] ?? id}: ${area(p.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} → ${area(preview.project.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} m²`,
+                      `${roomLabel(p, id)}: ${area(p.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} → ${area(preview.project.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} m²`,
                   )
                   .join(" · ")}
               </p>
@@ -924,14 +1190,34 @@ function App() {
               </option>
               {p.geometry.rooms.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {p.rooms[r.id].name === r.name
-                    ? (names[r.id] ?? r.name)
-                    : p.rooms[r.id].name}
+                  {roomLabel(p, r.id)}
                 </option>
               ))}
             </select>
           </label>
         </section>
+        {editing && (
+          <>
+            {lastChange && !layoutDrag && !edgeDrag && (
+              <div className="resize-feedback layout-feedback" role="status">
+                <b>Đã cập nhật mặt bằng</b>
+                <p>{lastChange}</p>
+                <small>Ctrl+Z để hoàn tác.</small>
+              </div>
+            )}
+            {(layoutDrag?.error || edgeDrag?.error) && (
+              <div className="resize-feedback resize-feedback-error" role="status">
+                <p>
+                  {layoutDrag?.error || edgeDrag?.error}{" "}
+                  {layoutDrag?.gesture.kind === "draw"
+                    ? "Thả chuột sẽ không thêm phòng."
+                    : "Thả chuột sẽ áp dụng vị trí hợp lệ gần nhất."}
+                </p>
+              </div>
+            )}
+            <LayoutSettingsSection p={p} run={runLayout} />
+          </>
+        )}
         {kind === "room" && room && box && (
           <>
             <section>
@@ -941,11 +1227,7 @@ function App() {
                 <input
                   key={room.id}
                   maxLength={200}
-                  defaultValue={
-                    p.rooms[room.id].name === room.name
-                      ? (names[room.id] ?? room.name)
-                      : p.rooms[room.id].name
-                  }
+                  defaultValue={roomLabel(p, room.id)}
                   onBlur={(e) => {
                     if (e.target.value.trim())
                       commit({
@@ -1000,6 +1282,16 @@ function App() {
                 </b>
               </div>
             </section>
+            {editing ? (
+              <LayoutRoomSection
+                key={room.id}
+                p={p}
+                roomId={room.id}
+                run={runLayout}
+                onSelect={select}
+              />
+            ) : (
+              <>
             <section>
               <h3>
                 Chỉnh hình học <span>mm</span>
@@ -1187,7 +1479,7 @@ function App() {
                     {preview.affected
                       .map(
                         (id) =>
-                          `${names[id] ?? id}: ${area(p.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} → ${area(preview.project.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} m²`,
+                          `${roomLabel(p, id)}: ${area(p.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} → ${area(preview.project.geometry.rooms.find((r) => r.id === id)!.poly).toFixed(2)} m²`,
                       )
                       .join(" · ")}
                   </p>
@@ -1235,7 +1527,7 @@ function App() {
                 return openings.length ? (
                   openings.map((o) => (
                     <label key={o.id}>
-                      {openingName(o.id)} · {o.width} mm
+                      {openingName(p, o.id)} · {o.width} mm
                       <select
                         aria-label={"Neo " + o.id}
                         value={o.anchor}
@@ -1276,7 +1568,18 @@ function App() {
                 không di chuyển cửa.
               </small>
             </section>
+              </>
+            )}
           </>
+        )}
+        {kind === "opening" && editing && selected && (
+          <OpeningSection
+            key={selected}
+            p={p}
+            id={selected}
+            run={runLayout}
+            onDone={() => select(firstRoom(p), "room")}
+          />
         )}
         {kind === "furniture" && furniture && (
           <section>
@@ -1349,7 +1652,7 @@ function App() {
                 <option value="">Giữ vị trí tuyệt đối</option>
                 {p.geometry.rooms.map((r) => (
                   <option key={r.id} value={r.id}>
-                    {names[r.id] ?? r.name}
+                    {roomLabel(p, r.id)}
                   </option>
                 ))}
               </select>
@@ -1404,7 +1707,7 @@ function App() {
                     ...p,
                     furniture: p.furniture.filter((f) => f.id !== furniture.id),
                   });
-                  select("master", "room");
+                  select(firstRoom(p), "room");
                 }}
               >
                 Xóa món
@@ -1463,6 +1766,25 @@ function App() {
           )}
         </section>
       </aside>
+      {templatesOpen && (
+        <TemplateDialog
+          p={p}
+          onClose={() => setTemplatesOpen(false)}
+          onApply={(next) => {
+            commit(next);
+            setTemplatesOpen(false);
+            select(firstRoom(next), "room");
+            setTargetRoom(null);
+            setFitKey((k) => k + 1);
+            setNotice("");
+            // An empty plan opens straight in layout mode, ready to draw.
+            const blank = !!next.geometry.layout && next.geometry.rooms.length === 1;
+            setLayoutMode(blank);
+            setLayoutTool(blank ? "room" : "select");
+            setLastChange(blank ? "Kéo trên bản vẽ để vẽ thêm phòng." : "");
+          }}
+        />
+      )}
       <footer>
         <span className="save-dot" />
         {saveState}

@@ -39,9 +39,19 @@ npm run preview
 - Trong 3D có phối cảnh, nhìn từ trên, tường thấp/đầy đủ, giờ nắng, ngày/đêm, đi bộ bằng WASD/phím mũi tên hoặc nút cảm ứng. Kéo để nhìn khi đi bộ; chạm cửa để mở/đóng.
 - Xuất PNG cho 2D/3D. `Ctrl/Cmd+Z` hoàn tác, `Ctrl/Cmd+Shift+Z` làm lại, `T` đổi 2D/3D và `Esc` hủy preview.
 
+## Mẫu mặt bằng và vẽ phòng
+
+- Nút **Mẫu** mở danh sách mẫu: **Căn hộ gốc** (kèm 46 món nội thất), **Căn 2 phòng ngủ**, **Căn studio** và **Mặt bằng trống**. Chọn một mẫu rồi xác nhận để thay phương án đang mở; thao tác này là một bước hoàn tác (`Ctrl/Cmd+Z` quay lại phương án cũ). Mặt bằng trống mở thẳng chế độ vẽ phòng.
+- **Lưu phương án hiện tại làm mẫu** (có hoặc không kèm nội thất) để dùng lại sau. Mẫu của tôi lưu trong trình duyệt (khóa `interior-floorplan-templates`, tối đa 20 mẫu); để chuyển máy, dùng Xuất phương án / Nhập JSON.
+- Với mặt bằng tự vẽ, nút **✎ Sửa mặt bằng** (bản vẽ 2D) mở chế độ vẽ. Kích thước phòng là **thông thủy**; tường được sinh tự động quanh các phòng: tường ngoài 220 mm, hai phòng cách nhau đúng độ dày vách (mặc định 110 mm) dùng chung một vách, hai phòng đặt sát nhau thì thông nhau (không tường, mỗi phòng giữ loại sàn riêng). Độ dày tường ngoài, vách mặc định và chiều cao trần chỉnh trong bảng **Bố cục mặt bằng**.
+- **▭ Vẽ phòng**: kéo trên bản vẽ để vẽ phòng chữ nhật; cạnh tự hít vào phòng bên cạnh (sát, cách một vách hoặc thẳng hàng), ngoài ra làm tròn 10 mm. **↖ Chọn**: bấm để chọn phòng/cửa; kéo phòng đang chọn để di chuyển, kéo tay nắm cạnh để đổi kích thước — ở chế độ này chỉ phòng đó thay đổi, tường được vẽ lại. Bảng Chi tiết có ô Rộng/Sâu/X/Y, **Thêm phòng bên cạnh**, danh sách **Phòng kề bên** (Bỏ vách / Thêm vách / Gộp) và **Xóa phòng**. Phòng chữ L/U tạo bằng cách gộp hai phòng kề nhau.
+- **Cửa đi / Cửa sổ / Cửa trượt**: bấm lên tường để đặt (kéo thì di chuyển khung nhìn); cửa đi đầu tiên trên tường ngoài là cửa vào căn hộ. Mục **Cửa của phòng** trong bảng Chi tiết liệt kê cửa trên các cạnh của phòng đang chọn và cho thêm cửa vào giữa một cạnh, dùng được bằng bàn phím. Chọn cửa để chỉnh rộng, vị trí, bên bản lề, chiều mở, bậu/đỉnh cửa sổ hoặc xóa. Cửa nằm trên mặt phòng nên đi theo khi phòng di chuyển; nếu sau một thay đổi cửa không còn nằm trọn trên một bức tường, app bỏ cửa đó và báo rõ (hoàn tác được). Hạ trần thấp hơn đỉnh cửa sổ thì đỉnh cửa sổ hạ theo. Đoạn vách đã phá bằng công cụ Tường vẫn được giữ khi vẽ lại; phần không giữ được (tường đã đổi chỗ hoặc thành tường ngoài) được dựng lại và báo.
+- Mỗi thao tác vẽ là một bước hoàn tác. Nội thất giữ vị trí tuyệt đối; món lọt ra ngoài phòng được cảnh báo như khi đổi kích thước. Bấm **✓ Xong** để về chế độ thường; ở chế độ thường, kéo cạnh vẫn dời tường chung như với căn hộ gốc.
+- Căn hộ gốc không mở được chế độ vẽ (có khối chịu lực và đoạn tường đặc thù không sinh lại được); vẫn kéo cạnh và đổi kích thước như trước.
+
 ## JSON và autosave
 
-**Xuất phương án** ghi schema v2 với `units: "mm"`, toàn bộ polygon, solid walls, wall runs, liên kết cạnh phòng, cửa/cửa sổ, điểm neo, nội thất, metadata, tường đã phá và phép đo. File chỉ chứa thay đổi đã áp dụng; kích thước đang xem trước chưa được ghi. File v2 có thể nhập lại mà không mất geometry.
+**Xuất phương án** ghi schema v2 với `units: "mm"`, toàn bộ polygon, solid walls, wall runs, liên kết cạnh phòng, cửa/cửa sổ, điểm neo, nội thất, metadata, tường đã phá và phép đo. Mặt bằng tự vẽ có thêm `name`, `geometry.layout` (độ dày tường ngoài/vách), `geometry.ceiling` và `geometry.windowSpecs` (bậu/đỉnh từng cửa sổ); các trường này không bắt buộc nên file cũ vẫn nhập được. File chỉ chứa thay đổi đã áp dụng; kích thước đang xem trước chưa được ghi. File v2 có thể nhập lại mà không mất geometry.
 
 JSON v1 được gắn geometry căn hộ gốc; giữ ID/type/kích thước/vị trí/góc/màu, metadata phòng, tường đã phá và phép đo (điểm đo `{x, y}` của bản gốc được chuyển thành `[x, y]`). Seed trang trí được tính một lần bằng công thức gốc. File lỗi được từ chối trước khi thay phương án đang mở, kèm thông báo tiếng Việt chỉ rõ trường bị lỗi.
 

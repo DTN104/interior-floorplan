@@ -59,9 +59,18 @@ export type Furniture = {
   modelSeed: number;
   placement?: { roomId: string; wallId?: string };
 };
+/** Plans drawn with the room editor: walls are generated around the rooms with these thicknesses (mm). */
+export type LayoutSettings = {
+  exterior: number;
+  /** Default gap left between two rooms that share a partition; existing gaps keep their width. */
+  partition: number;
+};
+export type WindowSpec = { sill: number; head: number };
 export type Project = {
   schemaVersion: 2;
   units: "mm";
+  /** Plan name shown in the editor, e.g. the template it was created from. */
+  name?: string;
   geometry: {
     rooms: Room[];
     walls: Wall[];
@@ -75,6 +84,11 @@ export type Project = {
     bayAttachments: Attachment[];
     /** 2 = openings default to "fixed". Older v2 files used "start" as the implicit default. */
     anchorVersion?: 2;
+    layout?: LayoutSettings;
+    /** Ceiling height in mm (the original apartment: 2800). */
+    ceiling?: number;
+    /** Sill and head height of each window (mm), parallel to `windows`. Missing: the original apartment's rule. */
+    windowSpecs?: WindowSpec[];
   };
   rooms: Record<string, { name: string; mat: string }>;
   furniture: Furniture[];
@@ -113,6 +127,37 @@ export const names: Record<string, string> = {
   bay1: "Bệ cửa sổ chính",
   bay2: "Bệ cửa sổ phòng con",
 };
+const legacyRoomNames = new Map((ROOMS as Room[]).map((r) => [r.id, r.name]));
+/**
+ * Name shown for a room: rooms of the original apartment that still carry their source name get the
+ * Vietnamese label; every other room shows its stored name.
+ */
+export function roomLabel(p: Project, id: string) {
+  const r = p.geometry.rooms.find((r) => r.id === id),
+    stored = p.rooms[id]?.name ?? r?.name ?? id;
+  return r && stored === r.name && legacyRoomNames.get(id) === r.name
+    ? (names[id] ?? stored)
+    : stored;
+}
+export const DEFAULT_CEILING = 2800;
+/** Window heights of the original apartment: bathroom window high, bay windows low. */
+export function windowSpec(g: Project["geometry"], i: number): WindowSpec {
+  return (
+    g.windowSpecs?.[i] ?? {
+      sill: i === 0 ? 1400 : i >= 6 ? 450 : 900,
+      head: 2400,
+    }
+  );
+}
+/** World origin (mm) of the 3D scene. The original apartment keeps the source's fixed origin. */
+export function sceneOrigin(p: Project): Point {
+  if (!p.geometry.layout) return [6000, 5300];
+  const b = bounds(p.geometry.rooms.flatMap((r) => r.poly));
+  return [
+    Math.round((b[0] + b[2]) / 200) * 100,
+    Math.round((b[1] + b[3]) / 200) * 100,
+  ];
+}
 export const materials: Record<string, string> = {
   wood: "Sàn sồi",
   walnut: "Sàn óc chó",
@@ -173,10 +218,19 @@ export const itemNames: Record<string, string> = {
 const overlap = (a: number, b: number, c: number, d: number) =>
   Math.min(b, d) - Math.max(a, c) > 0.01;
 const rectAxis = (r: Rect): 0 | 1 => (r[2] - r[0] <= r[3] - r[1] ? 0 : 1);
-function topology(g: Project["geometry"]) {
+/**
+ * Derive wall runs, opening attachments and room-edge links from the primary rectangles. `axisOf` names
+ * the thickness axis of pieces whose shape is ambiguous (generated plans know it for every piece).
+ */
+export function topology(
+  g: Project["geometry"],
+  axisOf?: (r: Rect) => 0 | 1 | undefined,
+) {
   // Wall thickness is 240 mm in the source, even for short stubs whose length is smaller than their thickness.
   const wallAxis = (r: Rect): 0 | 1 =>
-    r[2] - r[0] === 240 ? 0 : r[3] - r[1] === 240 ? 1 : rectAxis(r);
+      axisOf?.(r) ??
+      (r[2] - r[0] === 240 ? 0 : r[3] - r[1] === 240 ? 1 : rectAxis(r)),
+    openingAxis = (r: Rect): 0 | 1 => axisOf?.(r) ?? rectAxis(r);
   const pieces = [
     ...g.walls.map((w) => ({
       r: w.slice(0, 4) as Rect,
@@ -187,7 +241,7 @@ function topology(g: Project["geometry"]) {
       ...g.doors.map((d) => d.rect),
       ...g.slides.map((d) => d.rect),
       ...g.bayOpenings,
-    ].map((r) => ({ r, axis: rectAxis(r) })),
+    ].map((r) => ({ r, axis: openingAxis(r) })),
   ];
   const tracks: Track[] = [];
   for (const { r, axis } of pieces) {
@@ -212,7 +266,7 @@ function topology(g: Project["geometry"]) {
   }
   tracks.forEach((t, i) => (t.id = "wall-run-" + i));
   g.tracks = tracks;
-  const link = (r: Rect, axis: 0 | 1 = rectAxis(r)): Attachment => {
+  const link = (r: Rect, axis: 0 | 1 = openingAxis(r)): Attachment => {
     const along = 1 - axis;
     const t = tracks.find(
       (t) =>
@@ -330,7 +384,7 @@ function segmentsCross(a: Point, b: Point, c: Point, d: Point) {
     on(c, d, b)
   );
 }
-function validatePolygon(r: Room) {
+export function validatePolygon(r: Room) {
   if (r.poly.length < 4 || signedArea(r.poly) <= 0)
     throw Error("Polygon phòng phải có diện tích dương và thứ tự đỉnh hợp lệ.");
   for (let i = 0; i < r.poly.length; i++) {
@@ -404,7 +458,7 @@ export function validateGeometry(p: Project) {
     for (let j = i + 1; j < g.rooms.length; j++)
       if (intersectionArea(g.rooms[i].poly, g.rooms[j].poly) > 1)
         throw Error(
-          `Phòng ${names[g.rooms[i].id] ?? g.rooms[i].id} và ${names[g.rooms[j].id] ?? g.rooms[j].id} chồng nhau.`,
+          `Phòng ${roomLabel(p, g.rooms[i].id)} và ${roomLabel(p, g.rooms[j].id)} chồng nhau.`,
         );
   const openingRects = [
     ...g.windows,
@@ -443,6 +497,7 @@ export function validateGeometry(p: Project) {
     if (!t || a.offset < 0 || a.offset + a.width > t.end - t.start + 0.01)
       throw Error("Cửa/cửa sổ không còn vừa tường.");
   }
+  // Only the original apartment has walls standing inside nominal room polygons; drawn plans have none.
   for (let i = 0; i < g.walls.length; i++) {
     const w = g.walls[i];
     for (const r of g.rooms)
@@ -453,9 +508,9 @@ export function validateGeometry(p: Project) {
           [w[2], w[3]],
           [w[0], w[3]],
         ]) >
-        (originalIntrusions.get(r.id + ":" + i) ?? 0) + 1
+        (g.layout ? 0 : (originalIntrusions.get(r.id + ":" + i) ?? 0)) + 1
       )
-        throw Error("Tường xâm nhập phòng " + (names[r.id] ?? r.id) + ".");
+        throw Error("Tường xâm nhập phòng " + roomLabel(p, r.id) + ".");
   }
   for (const t of g.tracks)
     if (t.end <= t.start || t.cross[1] <= t.cross[0])
@@ -476,9 +531,18 @@ const doorLabels = [
   "Cửa phòng con",
   "Cửa vào",
 ];
-export function openingName(id: string) {
+const legacyDoorNames = DOORS.map((d) => d.name);
+/** Doors of the original apartment keep their Vietnamese labels; drawn plans use the stored door name. */
+export function openingName(p: Project, id: string) {
   const n = Number(id.slice(id.lastIndexOf("-") + 1));
-  if (id.startsWith("door-")) return doorLabels[n] ?? `Cửa ${n + 1}`;
+  if (id.startsWith("door-")) {
+    const d = p.geometry.doors.find((d) => d.id === id);
+    if (d?.name && (p.geometry.layout || d.name !== legacyDoorNames[n]))
+      return d.name;
+    return p.geometry.layout
+      ? `Cửa ${n + 1}`
+      : (doorLabels[n] ?? `Cửa ${n + 1}`);
+  }
   if (id.startsWith("slide-")) return `Cửa trượt ${n + 1}`;
   if (id.startsWith("bay-")) return `Ô bệ cửa sổ ${n + 1}`;
   return `Cửa sổ ${n + 1}`;
@@ -1086,6 +1150,21 @@ const geometrySchema = z.object({
   windowAttachments: z.array(attachment),
   bayAttachments: z.array(attachment),
   anchorVersion: z.literal(2).optional(),
+  layout: z
+    .object({
+      exterior: z.number().int().min(50).max(1000),
+      partition: z.number().int().min(50).max(1000),
+    })
+    .optional(),
+  ceiling: z.number().min(2000).max(6000).optional(),
+  windowSpecs: z
+    .array(
+      z.object({
+        sill: z.number().min(0).max(5000),
+        head: z.number().min(100).max(6000),
+      }),
+    )
+    .optional(),
 });
 // The original HTML app stores measurement points as {x, y}; v2 stores [x, y].
 const legacyPoint = z.union([
@@ -1094,6 +1173,7 @@ const legacyPoint = z.union([
 ]);
 const baseSchema = (legacy: boolean) =>
   z.object({
+    name: z.string().max(200).optional(),
     furniture: z.array(furnitureSchema).max(2000),
     rooms: z
       .record(
@@ -1188,7 +1268,14 @@ export function importProject(value: unknown): Project {
   );
   p.demolished = b.demolished ?? [];
   p.measures = b.measures ?? [];
+  if (b.name) p.name = b.name;
   const g = p.geometry;
+  if (
+    g.windowSpecs &&
+    (g.windowSpecs.length !== g.windows.length ||
+      g.windowSpecs.some((w) => w.sill >= w.head))
+  )
+    throw Error("Chiều cao bậu/đỉnh cửa sổ không hợp lệ.");
   unique(
     g.rooms.map((r) => r.id),
     "phòng",
@@ -1237,7 +1324,7 @@ export function importProject(value: unknown): Project {
   refreshRoomLinks(g);
   return p;
 }
-function verifyTopology(g: Project["geometry"]) {
+export function verifyTopology(g: Project["geometry"]) {
   for (const r of g.rooms) {
     if (r.boundary?.length !== r.poly.length)
       throw Error("Thiếu tham chiếu cạnh phòng.");

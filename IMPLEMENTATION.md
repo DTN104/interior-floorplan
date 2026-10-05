@@ -25,6 +25,24 @@ Một số khối chịu lực gốc vốn nhô vào polygon diện tích phòng
 
 SVG, mesh kiến trúc 3D, cửa, sàn, diện tích/chi phí và collision đều đọc cùng project. Các phép đo là điểm tuyệt đối. Nội thất gắn tường chỉ di chuyển khi người dùng chọn chế độ tương ứng; fit warnings dùng footprint xoay và giao polygon, bao gồm tường chưa bị phá.
 
+## Mặt bằng tự vẽ và mẫu
+
+`src/layout.ts` dựng mặt bằng từ phòng (polygon thông thủy, vuông góc) và cửa đặt trên mặt phòng; `src/templates.ts` giữ các mẫu. Mỗi thao tác vẽ (thêm/di chuyển/đổi kích thước/xóa/gộp phòng, bỏ/thêm vách, thêm/sửa/xóa cửa, đổi cài đặt) đọc lại phòng và cửa từ project hiện tại rồi sinh lại toàn bộ tường, nên không cần lưu một bản phác riêng và cũng chạy sau khi project đã được kéo cạnh ở chế độ thường.
+
+Sinh tường:
+
+1. Cắt mặt bằng thành lưới theo mọi tọa độ phòng và tọa độ ± độ dày tường ngoài. Ô nằm trong vùng giãn nở một độ dày tường ngoài quanh các phòng (trừ chính các phòng) là ô tường.
+2. Mỗi mặt phòng nhận dải tường trước mặt nó: nếu có phòng đối diện trong vòng hai lần độ dày tường ngoài thì là vách dày đúng bằng khe hở (khe 0 mm = thông nhau, khe dưới 50 mm bị từ chối); nếu không thì là tường ngoài một độ dày.
+3. Hai dải chồng nhau (góc trong, phòng lệch nhau) được phân xử: vách thắng tường ngoài, rồi tường của mặt phòng dài hơn chạy suốt, rồi tường ngang; bên thua nhường cả mặt cắt ngang của nó tại đó.
+4. Ô còn lại (góc ngoài, chỗ nối chữ T, chữ thập) nối dài một tường thẳng hàng: ưu tiên tường liền ở cả hai phía, rồi tường ngoài, rồi tường ngang. Mẩu không chạm phòng nào bị bỏ; khe rất hẹp sát phòng (hai phòng gần thẳng hàng) thành một mẩu tường riêng.
+5. Gộp ô thành các đoạn tường chữ nhật theo từng dải, khoét cửa vào đúng dải sau mặt phòng chủ (không được cắt qua chỗ nối), rồi dùng `topology()` với hướng tường đã biết để tạo wall run, liên kết cửa và cạnh phòng. Kết quả qua `validateGeometry`/`verifyTopology` như mọi project.
+
+Cửa đi thuộc phòng mà cánh mở vào; cửa sổ và cửa trượt trong vách thuộc phòng có mặt ngắn hơn (ví dụ ban công). Khi phòng chủ di chuyển, cửa đi theo; khi mặt phòng ngắn lại, cửa được kéo vào trong; cửa không còn nằm trọn trên một dải tường bị bỏ và được báo lại, kể cả cửa đã lệch khỏi mọi mặt phòng sau các lần kéo cạnh ở chế độ thường. Đoạn vách đã phá được giữ bằng cách cắt đoạn vách mới tại đúng vị trí cũ; phần nào không còn vách cùng dải thì được dựng lại và báo. Nội thất giữ vị trí và gắn lại wall run gần nhất. Mọi tọa độ, độ dày và chiều cao do thao tác vẽ tạo ra đều làm tròn tới mm để file luôn nhập lại được.
+
+Những chỗ trước đây gắn với căn hộ gốc được tách: tên phòng/cửa tiếng Việt chỉ áp cho phòng/cửa còn giữ tên gốc, mức tường lấn vào phòng chỉ cho phép với căn hộ gốc, gốc tọa độ 3D và vùng đổ bóng theo kích thước mặt bằng tự vẽ, chiều cao trần và bậu/đỉnh cửa sổ đọc từ dữ liệu (căn hộ gốc giữ quy tắc cũ), vị trí mặc định của đồ mới và điểm bắt đầu đi bộ không còn dựa vào tọa độ cố định.
+
+Kiểm chứng: ba mẫu tự vẽ và mặt bằng thử đều nhập lại được và chấp nhận 100% thao tác kéo cạnh ±50…500 mm của engine resize hiện có; một chuỗi 220 thao tác vẽ ngẫu nhiên (thêm/di chuyển/đổi kích thước/gộp/bỏ vách/đặt cửa/kéo cạnh/xóa) giữ hình học hợp lệ sau mỗi bước, không có lần nào hỏng vì không đóng được tường. Sinh lại một mặt bằng khoảng 15 phòng mất khoảng 10 ms. Playwright kiểm tra chọn/lưu/xóa mẫu, hoàn tác khi đổi mẫu, vẽ phòng có hít vách (cả khi kéo sang trái), đặt và sửa cửa, công cụ cửa kéo thì di chuyển khung nhìn, nhấn tay nắm mà không kéo không đổi gì, di chuyển phòng có Esc hủy, thêm/chọn cửa bằng bàn phím, giữ focus trong hộp thoại mẫu, 3D của mặt bằng tự vẽ và màn hình điện thoại.
+
 ## Giữ model và tài nguyên
 
 `src/legacy-models.js` tách toàn bộ helper, floor texture và switch factory từ nguồn MIT. Những thay đổi có chủ đích: truyền các global material cần thiết vào module, dùng `modelSeed` đã lưu, thay anisotropy phụ thuộc renderer bằng 8, thêm quản lý vòng đời/cache và bộ đếm phục vụ kiểm tra hiệu năng. Mỗi furniture dùng một primitive R3F; vị trí/góc do group ngoài quản lý. Đổi transform không dựng lại factory; đổi type/kích thước/màu/seed chỉ dựng lại món đó.
@@ -45,7 +63,7 @@ SVG, mesh kiến trúc 3D, cửa, sàn, diện tích/chi phí và collision đ�
 
 ## Giới hạn cụ thể
 
-- Editor hỗ trợ căn hộ polygon vuông góc hiện có và chỉnh cạnh của nó. Chưa có công cụ tạo/xóa phòng, thêm/xóa tường, tạo cửa mới hoặc sửa độ dày tường. Không hỗ trợ polygon xiên. Solid walls và openings giữ ID/thứ tự của fixture; không tự sắp lại topology.
+- Căn hộ gốc: chỉ chỉnh cạnh, không thêm/xóa phòng hay cửa; solid walls và openings giữ ID/thứ tự của fixture. Mặt bằng tự vẽ: phòng chữ nhật (chữ L/U bằng cách gộp), tường sinh tự động, chưa vẽ tường rời, cột hay tường xiên, chưa đổi độ dày từng đoạn vách riêng lẻ, chưa có ảnh nền để vẽ đè. Không hỗ trợ polygon xiên.
 - Vẫn bị chặn (8/400 thao tác trong ma trận): kéo vách giữa Hành lang và Phòng con sang phải quá 240 mm (vượt độ dày tường, khối chịu lực góc khiến hai phòng chồng nhau), và kéo tường giữa Phòng con/Phòng khách lên quá 480 mm (đụng khung bệ cửa sổ phòng con). Engine không tự tách một wall run thành hai đoạn để chỉ dời một phần, nên kéo cạnh một phòng có thể dời cả các phòng chung đường tường đó (xem preview).
 - Door open/closed là trạng thái xem 3D, không ghi trong JSON/undo. Walkthrough kiểm tra tường, cửa sổ và cửa đóng, nhưng không dùng mô phỏng collision vật lý với nội thất; fit warnings riêng kiểm tra bố trí nội thất. Chưa có pointer-lock/mouse-look vô hạn; dùng kéo để nhìn và nút di chuyển cảm ứng.
 - Kéo đồ và kéo cạnh phòng trên 2D được hỗ trợ; kích thước nội thất vẫn sửa qua panel, chưa có handle resize nội thất trên mesh. 2D hỗ trợ pan/drag bằng cảm ứng; zoom dùng wheel trên desktop. Pinch zoom 2D chưa có; **Vừa khung** khôi phục khung nhìn.
