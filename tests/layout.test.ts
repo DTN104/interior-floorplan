@@ -32,6 +32,9 @@ import {
   openingName,
   sceneOrigin,
   windowSpec,
+  labelPoint,
+  pointIn,
+  Point,
 } from "../src/project";
 import {
   BUILTIN_TEMPLATES,
@@ -529,6 +532,70 @@ describe("partitions stay thinner than two exterior walls", () => {
     const wider = updateOpening(p, w.id!, { width: 1300 }).project.geometry.windows[0];
     expect(wider[2] - wider[0]).toBe(1300);
     expect(() => updateOpening(p, w.id!, { sill: 2101 })).toThrow("ít nhất 100 mm");
+  });
+});
+
+describe("holes in the wall mass and room labels", () => {
+  const wallAt = (p: Project, x: number, y: number) =>
+      p.geometry.walls.some((w) => w[0] <= x && x <= w[2] && w[1] <= y && y <= w[3]),
+    strictlyInside = (poly: Point[], [x, y]: Point) =>
+      [[-1, -1], [1, -1], [1, 1], [-1, 1]].every(([dx, dy]) => pointIn(poly, [x + dx, y + dy]));
+  it("fills a narrow hole walled in between rooms, but keeps a courtyard open", () => {
+    // A and B are 500 mm apart: two exterior walls with a 60 mm gap, closed at both ends by N and S.
+    const cavity = newLayoutProject({
+      name: "Khe kín",
+      rooms: [
+        { id: "a", name: "A", mat: "wood", rect: [0, 0, 3000, 3000] },
+        { id: "b", name: "B", mat: "wood", rect: [3500, 0, 6500, 3000] },
+        { id: "n", name: "N", mat: "wood", rect: [0, -3110, 6500, -110] },
+        { id: "s", name: "S", mat: "wood", rect: [0, 3110, 6500, 6110] },
+      ],
+    });
+    expect(wallAt(cavity, 3250, 1500)).toBe(true);
+    expect(roundTrip(cavity)).toEqual(cavity);
+    const yard = newLayoutProject({
+      name: "Giếng trời",
+      rooms: [
+        { id: "n", name: "N", mat: "wood", rect: [0, 0, 5000, 1500] },
+        { id: "s", name: "S", mat: "wood", rect: [0, 3500, 5000, 5000] },
+        { id: "w", name: "W", mat: "wood", rect: [0, 1610, 1500, 3390] },
+        { id: "e", name: "E", mat: "wood", rect: [3500, 1610, 5000, 3390] },
+      ],
+    });
+    expect(wallAt(yard, 2500, 2500)).toBe(false);
+    expect(wallAt(yard, 1600, 2500)).toBe(true);
+  });
+  it("puts labels strictly inside rooms, also after edge drags in normal mode", () => {
+    const u: Point[] = [[0, 0], [1000, 0], [1000, 2000], [2000, 2000], [2000, 0], [3000, 0], [3000, 3000], [0, 3000]];
+    expect(labelPoint(u)).toEqual([1500, 2500]);
+    // Merged room whose bounding-box middle lies exactly on one of its sides.
+    const odd: Point[] = [[5120, -13100], [8520, -13100], [8520, -9500], [1470, -9500], [1470, -9580], [1410, -9580],
+      [1410, -11300], [1610, -11300], [1610, -13000], [4310, -13000], [4310, -11300], [5120, -11300]];
+    expect(strictlyInside(odd, labelPoint(odd))).toBe(true);
+    // Dragging the far end of the thin arm used to shift the label by half the change, off the floor.
+    const l = newLayoutProject({
+      name: "L",
+      rooms: [{ id: "l", name: "L", mat: "wood",
+        poly: [[100, -100], [3600, -100], [3600, 3910], [8620, 3910], [8620, 7800], [0, 7800], [0, 3910], [100, 3910]] }],
+    });
+    expect(l.geometry.rooms[0].at).toEqual([4310, 5860]);
+    const dragged = moveEdge(l, "l", 0, -4000).project.geometry.rooms[0];
+    expect(dragged.poly[0]).toEqual([100, -4100]);
+    expect(dragged.at).toEqual([4310, 5860]);
+    let p = newLayoutProject(plan),
+      moved = 0;
+    const pk = () => p.geometry.rooms.find((r) => r.id === "pk")!;
+    for (let i = 0; i < pk().poly.length; i++)
+      for (const d of [-300, 600, -900]) {
+        try {
+          p = moveEdge(p, "pk", i, d).project;
+          moved++;
+        } catch {
+          continue;
+        }
+        for (const r of p.geometry.rooms) expect(strictlyInside(r.poly, r.at!)).toBe(true);
+      }
+    expect(moved).toBeGreaterThan(5);
   });
 });
 

@@ -815,7 +815,9 @@ export function moveEdge(
       ]);
     if (changed) {
       affected.push(r.id);
-      if (r.at) {
+      // Drawn plans place the label again; the original apartment keeps its hand-placed labels.
+      if (g.layout) r.at = labelPoint(r.poly);
+      else if (r.at) {
         const old = bounds(original.poly),
           now = bounds(r.poly);
         r.at[axis] +=
@@ -1042,6 +1044,56 @@ export function pointIn(poly: Point[], p: Point) {
       inside = !inside;
   }
   return inside;
+}
+/** Horizontal slabs of an orthogonal polygon. */
+export function slabs(poly: Point[]): Rect[] {
+  const ys = [...new Set(poly.map((v) => v[1]))].sort((a, b) => a - b),
+    out: Rect[] = [];
+  for (let k = 0; k + 1 < ys.length; k++) {
+    const y0 = ys[k],
+      y1 = ys[k + 1],
+      ym = (y0 + y1) / 2,
+      xs: number[] = [];
+    poly.forEach((a, i) => {
+      const b = poly[(i + 1) % poly.length];
+      if (a[0] === b[0] && Math.min(a[1], b[1]) < ym && ym < Math.max(a[1], b[1]))
+        xs.push(a[0]);
+    });
+    xs.sort((a, b) => a - b);
+    for (let j = 0; j + 1 < xs.length; j += 2) out.push([xs[j], y0, xs[j + 1], y1]);
+  }
+  return out;
+}
+/** Distance from a point to the nearest side of a polygon (0 on a side). */
+function clearance(poly: Point[], [x, y]: Point) {
+  return poly.reduce((d, a, i) => {
+    const b = poly[(i + 1) % poly.length],
+      dx = Math.max(Math.min(a[0], b[0]) - x, 0, x - Math.max(a[0], b[0])),
+      dy = Math.max(Math.min(a[1], b[1]) - y, 0, y - Math.max(a[1], b[1]));
+    return Math.min(d, Math.hypot(dx, dy));
+  }, Infinity);
+}
+/** Labels keep at least this far from the walls when the room allows it (mm). */
+const LABEL_CLEARANCE = 200;
+const round10 = (v: number) => Math.round(v / 10) * 10 || 0;
+/**
+ * Point for a room's label and ceiling lamp, always strictly inside the room: the middle of its bounding
+ * box when that is clear of the walls, otherwise the middle of the room's largest part.
+ */
+export function labelPoint(poly: Point[]): Point {
+  const inside = (p: Point) => pointIn(poly, p) && clearance(poly, p) > 0,
+    part = slabs(poly).sort(
+      (p, q) => (q[2] - q[0]) * (q[3] - q[1]) - (p[2] - p[0]) * (p[3] - p[1]),
+    )[0],
+    exact: Point = [(part[0] + part[2]) / 2 + 0, (part[1] + part[3]) / 2 + 0],
+    rounded: Point = [round10(exact[0]), round10(exact[1])],
+    fallback = inside(rounded) ? rounded : exact,
+    b = bounds(poly),
+    middle: Point = [round10((b[0] + b[2]) / 2), round10((b[1] + b[3]) / 2)];
+  return inside(middle) &&
+    clearance(poly, middle) >= Math.min(LABEL_CLEARANCE, clearance(poly, fallback))
+    ? middle
+    : fallback;
 }
 export function footprint(f: Furniture): Point[] {
   const a = (f.rot * Math.PI) / 180,

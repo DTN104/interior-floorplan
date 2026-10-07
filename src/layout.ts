@@ -21,6 +21,8 @@ import {
   clone,
   pointIn,
   windowSpec,
+  slabs,
+  labelPoint,
 } from "./project";
 
 export const DEFAULT_LAYOUT: LayoutSettings = { exterior: 220, partition: 110 };
@@ -102,7 +104,7 @@ export const rectPoly = ([x0, y0, x1, y1]: Rect): Point[] => [
   [x0, y1],
 ];
 export const isRectRoom = (r: Room) => r.poly.length === 4;
-const round10 = (v: number) => Math.round(v / 10) * 10;
+const round10 = (v: number) => Math.round(v / 10) * 10 || 0;
 /** Ordered rectangle in whole millimetres (the JSON schema stores layout settings as integers). */
 const normRect = (r: Rect): Rect =>
   [
@@ -110,7 +112,7 @@ const normRect = (r: Rect): Rect =>
     Math.min(r[1], r[3]),
     Math.max(r[0], r[2]),
     Math.max(r[1], r[3]),
-  ].map(Math.round) as Rect;
+  ].map((v) => Math.round(v) || 0) as Rect;
 
 /** Faces of a room polygon with their outward direction. */
 export function roomEdges(r: Room): RoomEdge[] {
@@ -132,25 +134,6 @@ export function roomEdges(r: Room): RoomEdge[] {
       s1,
     };
   });
-}
-/** Horizontal slabs of an orthogonal polygon. */
-export function slabs(poly: Point[]): Rect[] {
-  const ys = [...new Set(poly.map((v) => v[1]))].sort((a, b) => a - b),
-    out: Rect[] = [];
-  for (let k = 0; k + 1 < ys.length; k++) {
-    const y0 = ys[k],
-      y1 = ys[k + 1],
-      ym = (y0 + y1) / 2,
-      xs: number[] = [];
-    poly.forEach((a, i) => {
-      const b = poly[(i + 1) % poly.length];
-      if (a[0] === b[0] && Math.min(a[1], b[1]) < ym && ym < Math.max(a[1], b[1]))
-        xs.push(a[0]);
-    });
-    xs.sort((a, b) => a - b);
-    for (let j = 0; j + 1 < xs.length; j += 2) out.push([xs[j], y0, xs[j + 1], y1]);
-  }
-  return out;
 }
 /** Drop repeated and collinear vertices, orient like the source data and start at the top-left corner. */
 function simplify(poly: Point[]): Point[] {
@@ -203,17 +186,6 @@ const diffPoly = (a: Point[], cut: Point[][], what: string) =>
     clipping.difference([a] as any, ...cut.map((p) => [p] as any)) as number[][][][],
     what,
   );
-/** Point to put the room label and lamp on: the middle of the room, or of its largest part. */
-function labelPoint(poly: Point[]): Point {
-  const b = bounds(poly),
-    c: Point = [round10((b[0] + b[2]) / 2), round10((b[1] + b[3]) / 2)];
-  if (pointIn(poly, c)) return c;
-  const s = slabs(poly).sort(
-    (p, q) => (q[2] - q[0]) * (q[3] - q[1]) - (p[2] - p[0]) * (p[3] - p[1]),
-  )[0];
-  return [round10((s[0] + s[2]) / 2), round10((s[1] + s[3]) / 2)];
-}
-
 type Band = {
   axis: 0 | 1;
   c0: number;
@@ -437,6 +409,53 @@ function generateWalls(
         "e",
       );
     }
+  // Holes inside the wall mass: open cells walled in on every side (a junction of offset rooms, a gap a
+  // little wider than two exterior walls) are filled with filler pieces when the hole is narrower than a
+  // room; a wider enclosed space (a courtyard) and anything open to the outside stay open.
+  const hole = new Uint8Array(n);
+  for (let first = 0; first < n; first++) {
+    if (kind[first] !== 0 || hole[first]) continue;
+    const cells = [first];
+    hole[first] = 1;
+    let outside = false,
+      x0 = Infinity,
+      y0 = Infinity,
+      x1 = -Infinity,
+      y1 = -Infinity;
+    for (let k = 0; k < cells.length; k++) {
+      const c = cells[k],
+        i = c % nx,
+        j = (c - i) / nx;
+      if (i === 0 || j === 0 || i === nx - 1 || j === ny - 1) outside = true;
+      x0 = Math.min(x0, xs[i]);
+      x1 = Math.max(x1, xs[i + 1]);
+      y0 = Math.min(y0, ys[j]);
+      y1 = Math.max(y1, ys[j + 1]);
+      for (const [a, b] of [
+        [i - 1, j],
+        [i + 1, j],
+        [i, j - 1],
+        [i, j + 1],
+      ]) {
+        if (a < 0 || b < 0 || a >= nx || b >= ny) continue;
+        const d = at(a, b);
+        if (kind[d] === 0 && !hole[d]) {
+          hole[d] = 1;
+          cells.push(d);
+        }
+      }
+    }
+    if (outside || Math.min(x1 - x0, y1 - y0) >= MIN_ROOM) continue;
+    for (const c of cells) {
+      const i = c % nx,
+        j = (c - i) / nx;
+      kind[c] = 2;
+      band[c] =
+        xs[i + 1] - xs[i] >= ys[j + 1] - ys[j]
+          ? bandOf(1, ys[j], ys[j + 1], "e")
+          : bandOf(0, xs[i], xs[i + 1], "e");
+    }
+  }
   const pieces: Piece[] = [],
     seen = new Uint8Array(n),
     merge = (iv: [number, number][]) =>
