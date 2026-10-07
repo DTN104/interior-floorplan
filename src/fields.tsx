@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
-/** Number input that applies on Enter or blur and restores the last value when the entry is invalid. */
+/**
+ * Number input that applies on Enter or blur. It shows the current value again when the entry is invalid
+ * or when `onChange` returns false (the change was refused).
+ */
 export function NumberField({
   label,
   value,
@@ -9,7 +12,7 @@ export function NumberField({
 }: {
   label: string;
   value: number;
-  onChange: (v: number) => void;
+  onChange: (v: number) => void | boolean;
   min?: number;
   onInvalid?: () => void;
 }) {
@@ -29,7 +32,7 @@ export function NumberField({
         onBlur={() => {
           const v = draft.trim() ? Number(draft) : NaN;
           if (Number.isFinite(v) && v >= min) {
-            if (v !== value) onChange(v);
+            if (v !== value && onChange(v) === false) setDraft(String(value));
           } else {
             setDraft(String(value));
             onInvalid?.();

@@ -28,6 +28,19 @@ export const DEFAULT_LAYOUT: LayoutSettings = { exterior: 220, partition: 110 };
 export const MIN_ROOM = 500;
 export const MIN_WALL = 50;
 export const MIN_OPENING = 300;
+/**
+ * Two facing rooms share one partition when the gap between them is under this limit (two exterior
+ * thicknesses). From there on each room gets its own exterior wall, so partitions stay thinner than that.
+ */
+export const partitionLimit = (exterior: number) => 2 * exterior;
+/** Partition width for a new wall; settings saved before the limit existed are refused, not split. */
+export function newPartition(settings: LayoutSettings) {
+  if (settings.partition >= partitionLimit(settings.exterior))
+    throw Error(
+      `Vách mới (${settings.partition} mm) phải mỏng hơn 2 lần tường ngoài (${settings.exterior} mm). Hãy chỉnh lại ở mục Bố cục mặt bằng.`,
+    );
+  return settings.partition;
+}
 export const OPENING_WIDTH = {
   door: 800,
   entry: 900,
@@ -1072,8 +1085,8 @@ export function deleteRoom(p: Project, id: string): LayoutResult {
   return rebuild(s, { ...p, rooms: meta }, rooms, openings, undefined, dropped);
 }
 type Facing = { a: RoomEdge; b: RoomEdge; gap: number; s0: number; s1: number; strip: Rect };
-/** Faces of two rooms looking at each other at most `maxGap` apart, with the strip between them. */
-export function facing(A: Room, B: Room, maxGap: number): Facing[] {
+/** Faces of two rooms looking at each other less than `limit` apart, with the strip between them. */
+export function facing(A: Room, B: Room, limit: number): Facing[] {
   const out: Facing[] = [];
   for (const a of roomEdges(A))
     for (const b of roomEdges(B)) {
@@ -1082,7 +1095,7 @@ export function facing(A: Room, B: Room, maxGap: number): Facing[] {
       const gap = (b.line - a.line) * sideDir(a.side) || 0,
         s0 = Math.max(a.s0, b.s0),
         s1 = Math.min(a.s1, b.s1);
-      if (gap < 0 || gap > maxGap || s1 - s0 <= 0) continue;
+      if (gap < 0 || gap >= limit || s1 - s0 <= 0) continue;
       const lo = Math.min(a.line, b.line),
         hi = Math.max(a.line, b.line);
       out.push({ a, b, gap, s0, s1, strip: axis === 1 ? [s0, lo, s1, hi] : [lo, s0, hi, s1] });
@@ -1097,7 +1110,7 @@ export function neighbours(p: Project, id: string) {
   if (!room) return [];
   return g.rooms.flatMap((r) => {
     if (r.id === id) return [];
-    const f = facing(room, r, 2 * t);
+    const f = facing(room, r, partitionLimit(t));
     return f.length ? [{ id: r.id, gap: Math.max(...f.map((x) => x.gap)), length: f.reduce((s, x) => s + x.s1 - x.s0, 0) }] : [];
   });
 }
@@ -1106,7 +1119,7 @@ export function mergeRooms(p: Project, a: string, b: string): LayoutResult {
   const s = state(p),
     A = findRoom(s.rooms, a),
     B = findRoom(s.rooms, b),
-    f = facing(A, B, 2 * p.geometry.layout!.exterior);
+    f = facing(A, B, partitionLimit(p.geometry.layout!.exterior));
   if (!f.length) throw Error(`${labelOf(p, a)} và ${labelOf(p, b)} không nằm cạnh nhau.`);
   const strips = f.filter((x) => x.gap > 0).map((x) => x.strip);
   A.poly = unionPoly(
@@ -1144,7 +1157,7 @@ export function toggleWall(p: Project, a: string, b: string): LayoutResult {
     A = findRoom(s.rooms, a),
     B = findRoom(s.rooms, b),
     settings = p.geometry.layout!,
-    f = facing(A, B, 2 * settings.exterior);
+    f = facing(A, B, partitionLimit(settings.exterior));
   if (!f.length) throw Error(`${labelOf(p, a)} và ${labelOf(p, b)} không nằm cạnh nhau.`);
   const dropped: LayoutOpening[] = [];
   let openings = s.openings;
@@ -1158,7 +1171,7 @@ export function toggleWall(p: Project, a: string, b: string): LayoutResult {
       return !gone;
     });
   } else {
-    const tp = settings.partition,
+    const tp = newPartition(settings),
       cuts = f.map((x) => {
         const axis = sideAxis(x.a.side),
           inner = x.a.line - sideDir(x.a.side) * tp,
@@ -1207,7 +1220,7 @@ export function addOpening(
             sideAxis(e.side) === axis &&
             sideDir(e.side) === -sideDir(face.side) &&
             (e.line - face.line) * sideDir(face.side) >= 0 &&
-            (e.line - face.line) * sideDir(face.side) <= 2 * t &&
+            (e.line - face.line) * sideDir(face.side) < partitionLimit(t) &&
             e.s0 <= at &&
             at <= e.s1,
         ),
@@ -1268,7 +1281,7 @@ export function updateOpening(p: Project, id: string, change: OpeningChange): La
     ),
   );
   if (!(o.width >= MIN_OPENING)) throw Error(`Cửa phải rộng ít nhất ${MIN_OPENING} mm.`);
-  if (o.kind === "window" && !(o.sill! >= 0 && o.head! > o.sill! + 100))
+  if (o.kind === "window" && !(o.sill! >= 0 && o.head! - o.sill! >= 100))
     throw Error("Đỉnh cửa sổ phải cao hơn bậu ít nhất 100 mm.");
   if (o.kind === "window" && o.head! > (p.geometry.ceiling ?? 2800))
     throw Error("Đỉnh cửa sổ không được cao hơn trần.");
@@ -1306,6 +1319,25 @@ export function setLayoutSettings(
     throw Error(`Vách dày từ ${MIN_WALL} đến 300 mm.`);
   if (ceiling !== undefined && !(ceiling >= 2200 && ceiling <= 4500))
     throw Error("Trần cao từ 2200 đến 4500 mm.");
+  // Partitions stay thinner than two exterior walls; otherwise each room would get its own exterior wall
+  // and doors in the partition would end against the other one. Only checked when these settings change.
+  const limit = partitionLimit(settings.exterior);
+  if (change.partition !== undefined && settings.partition >= limit)
+    throw Error(`Vách mới phải mỏng hơn 2 lần tường ngoài: tối đa ${limit - 1} mm.`);
+  if (change.exterior !== undefined && settings.exterior < current.exterior) {
+    if (settings.partition >= limit)
+      throw Error(
+        `Tường ngoài ${settings.exterior} mm thì Vách mới (${settings.partition} mm) quá dày: vách phải mỏng hơn 2 lần tường ngoài. Hãy giảm Vách mới trước.`,
+      );
+    s.rooms.forEach((A, i) => {
+      for (const B of s.rooms.slice(i + 1))
+        for (const f of facing(A, B, partitionLimit(current.exterior)))
+          if (f.gap >= limit)
+            throw Error(
+              `Không hạ tường ngoài xuống ${settings.exterior} mm được: vách giữa ${labelOf(p, A.id)} và ${labelOf(p, B.id)} dày ${f.gap} mm, phải mỏng hơn 2 lần tường ngoài (tường ngoài cần từ ${Math.floor(f.gap / 2) + 1} mm).`,
+            );
+    });
+  }
   const base = {
     ...p,
     geometry: { ...p.geometry, ...(ceiling !== undefined ? { ceiling } : {}) },

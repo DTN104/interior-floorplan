@@ -55,6 +55,7 @@ import {
   LayoutRun,
 } from "./LayoutPanel";
 import { NumberField } from "./fields";
+import { newId } from "./id";
 import "./style.css";
 class SceneBoundary extends Component<
   { children: ReactNode },
@@ -539,8 +540,10 @@ function App() {
       commit(r.project);
       after?.(r);
       setLastChange(droppedText(r));
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Không thể chỉnh mặt bằng.");
+      return false;
     }
   };
   const placeOpening = (k: "door" | "window" | "slide", at: Point) => {
@@ -638,7 +641,7 @@ function App() {
     // the plan; the original apartment keeps its source behaviour.
     const at = box ?? bounds(p.geometry.rooms.flatMap((r) => r.poly)),
       drawnPlan = !!p.geometry.layout,
-      id = crypto.randomUUID(),
+      id = newId(),
       f: Furniture = {
         id,
         type: String(item[0]),
@@ -1690,7 +1693,7 @@ function App() {
                 onClick={() => {
                   const f = {
                     ...furniture,
-                    id: crypto.randomUUID(),
+                    id: newId(),
                     cx: furniture.cx + 100,
                     cy: furniture.cy + 100,
                   };

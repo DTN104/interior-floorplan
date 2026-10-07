@@ -18,6 +18,7 @@ import {
   neighbours,
   roomEdges,
   sideAxis,
+  newPartition,
 } from "../src/layout";
 import {
   Project,
@@ -35,6 +36,7 @@ import {
 import {
   BUILTIN_TEMPLATES,
   TEMPLATE_STORAGE_KEY,
+  UNREADABLE_TEMPLATES_KEY,
   loadTemplates,
   saveTemplate,
   deleteTemplate,
@@ -472,6 +474,64 @@ describe("random editing keeps drawn plans valid", () => {
   });
 });
 
+describe("partitions stay thinner than two exterior walls", () => {
+  const blankPlan = () => BUILTIN_TEMPLATES[3].create(),
+    east = (p: Project, id = "r1") =>
+      roomEdges(p.geometry.rooms.find((r) => r.id === id)!).find((e) => e.side === "e")!;
+  it("refuses a new-partition width that would turn into two exterior walls", () => {
+    const thin = setLayoutSettings(blankPlan(), { exterior: 100 }).project;
+    expect(() => setLayoutSettings(thin, { partition: 250 })).toThrow("tối đa 199 mm");
+    const ok = setLayoutSettings(thin, { partition: 199 }).project,
+      two = addRoom(ok, [4199, 0, 7199, 3000]).project;
+    expect(neighbours(two, "r1")).toEqual([{ id: "r2", gap: 199, length: 3000 }]);
+    // A door in it goes through the whole partition and is not taken for the entrance.
+    const door = addOpening(two, "door", east(two), 1500).project.geometry.doors[0];
+    expect(door).toMatchObject({ rect: [4000, 1100, 4199, 1900], name: "Cửa Phòng 1" });
+    expect(door.entry).toBeUndefined();
+  });
+  it("refuses a thinner exterior wall that would split an existing partition", () => {
+    let p = addRoom(blankPlan(), [4250, 0, 7250, 3000]).project;
+    p = addOpening(p, "door", east(p), 1500).project;
+    expect(() => setLayoutSettings(p, { exterior: 120 })).toThrow(
+      "vách giữa Phòng 1 và Phòng 2 dày 250 mm, phải mỏng hơn 2 lần tường ngoài (tường ngoài cần từ 126 mm)",
+    );
+    const res = setLayoutSettings(p, { exterior: 126 });
+    expect(res.dropped).toEqual([]);
+    expect(res.project.geometry.doors[0].rect).toEqual([4000, 1100, 4250, 1900]);
+    expect(neighbours(res.project, "r1")).toEqual([{ id: "r2", gap: 250, length: 3000 }]);
+    expect(() => setLayoutSettings(res.project, { partition: 260 })).toThrow("tối đa 251 mm");
+  });
+  it("still edits plans saved with a too-thick partition setting, but adds no split walls", () => {
+    const p = blankPlan();
+    p.geometry.layout = { exterior: 100, partition: 250 }; // as saved before the limit existed
+    expect(setLayoutSettings(p, { ceiling: 3000 }).project.geometry.ceiling).toBe(3000);
+    expect(() => newPartition(p.geometry.layout!)).toThrow(
+      "Vách mới (250 mm) phải mỏng hơn 2 lần tường ngoài (100 mm)",
+    );
+    const open = addRoom(p, [4000, 0, 7000, 3000]).project;
+    expect(() => toggleWall(open, "r1", "r2")).toThrow("Vách mới (250 mm)");
+  });
+  it("does not list rooms two exterior walls apart as neighbours: each has its own wall", () => {
+    const p = addRoom(blankPlan(), [4440, 0, 7440, 3000]).project;
+    expect(neighbours(p, "r1")).toEqual([]);
+    expect(p.geometry.walls.filter((w) => w[0] >= 4000 && w[2] <= 4440 && w[1] === 0)).toEqual([
+      [4000, 0, 4220, 3000, "e"],
+      [4220, 0, 4440, 3000, "e"],
+    ]);
+  });
+  it("keeps a window editable after the ceiling leaves exactly 100 mm between sill and head", () => {
+    const p0 = blankPlan(),
+      top = roomEdges(p0.geometry.rooms[0]).find((e) => e.side === "n")!,
+      w = addOpening(p0, "window", top, 2000);
+    let p = updateOpening(w.project, w.id!, { sill: 2150 }).project;
+    p = setLayoutSettings(p, { ceiling: 2200 }).project;
+    expect(p.geometry.windowSpecs).toEqual([{ sill: 2100, head: 2200 }]);
+    const wider = updateOpening(p, w.id!, { width: 1300 }).project.geometry.windows[0];
+    expect(wider[2] - wider[0]).toBe(1300);
+    expect(() => updateOpening(p, w.id!, { sill: 2101 })).toThrow("ít nhất 100 mm");
+  });
+});
+
 describe("templates", () => {
   it("builds every built-in template as a valid plan", () => {
     const built = BUILTIN_TEMPLATES.map((t) => [t.id, t.create()] as const);
@@ -508,6 +568,29 @@ describe("templates", () => {
     expect(() => saveTemplate(storage, "   ", p, true)).toThrow("Hãy đặt tên");
     data.set(TEMPLATE_STORAGE_KEY, "{not json");
     expect(loadTemplates(storage)).toEqual([]);
+  });
+  it("keeps entries it cannot read when saving or deleting, and copies a broken list aside", () => {
+    const data = new Map<string, string>(),
+      storage = {
+        getItem: (k: string) => data.get(k) ?? null,
+        setItem: (k: string, v: string) => void data.set(k, v),
+      },
+      future = { id: "future", name: "Mẫu của bản mới hơn", project: { schemaVersion: 3 } },
+      names = () => JSON.parse(data.get(TEMPLATE_STORAGE_KEY)!).map((t: { name: string }) => t.name);
+    data.set(TEMPLATE_STORAGE_KEY, JSON.stringify([future]));
+    const list = saveTemplate(storage, "Mới", defaultProject(), false);
+    expect(list.map((t) => t.name)).toEqual(["Mới"]);
+    expect(names()).toEqual(["Mới", "Mẫu của bản mới hơn"]);
+    expect(deleteTemplate(storage, list[0].id)).toEqual([]);
+    expect(JSON.parse(data.get(TEMPLATE_STORAGE_KEY)!)).toEqual([future]);
+    // Past the limit only the oldest readable templates go.
+    for (let i = 0; i < 21; i++) saveTemplate(storage, "Mẫu " + i, defaultProject(), false);
+    expect(loadTemplates(storage)).toHaveLength(20);
+    expect(names().slice(-2)).toEqual(["Mẫu 1", "Mẫu của bản mới hơn"]);
+    data.set(TEMPLATE_STORAGE_KEY, "{broken");
+    saveTemplate(storage, "Sau khi hỏng", defaultProject(), false);
+    expect(data.get(UNREADABLE_TEMPLATES_KEY)).toBe("{broken");
+    expect(names()).toEqual(["Sau khi hỏng"]);
   });
   it("starts from an independent, named copy of a template", () => {
     const source = newLayoutProject(plan),

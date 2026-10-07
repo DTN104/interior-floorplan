@@ -214,3 +214,59 @@ test("keyboard: openings can be added and chosen from the room panel; the templa
   await panel.getByRole("button", { name: /Cửa sổ 1 · 1200 mm/ }).click();
   await expect(panel.getByRole("button", { name: "Xóa cửa sổ" })).toBeVisible();
 });
+
+test("a refused edit shows the previous value again; partitions stay thinner than two exterior walls", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await useTemplate(page, "Căn 2 phòng ngủ");
+  await page.getByRole("button", { name: "✎ Sửa mặt bằng" }).click();
+  await page.getByLabel("Chọn phòng", { exact: true }).selectOption("pn1");
+  const panel = page.locator(".inspector"),
+    width = panel.getByLabel("Rộng", { exact: true });
+  await width.fill("6000");
+  await width.press("Enter");
+  await expect(page.locator(".error")).toContainText("chồng lên");
+  await expect(width).toHaveValue("3600");
+  const exterior = panel.getByLabel("Tường ngoài", { exact: true }),
+    partition = panel.getByLabel("Vách mới", { exact: true });
+  await exterior.fill("100");
+  await exterior.press("Enter");
+  await expect.poll(async () => (await stored(page)).geometry.layout).toEqual({ exterior: 100, partition: 110 });
+  await partition.fill("250");
+  await partition.press("Enter");
+  await expect(page.locator(".error")).toContainText("tối đa 199 mm");
+  await expect(partition).toHaveValue("110");
+  expect((await stored(page)).geometry.layout).toEqual({ exterior: 100, partition: 110 });
+});
+
+test("furniture, duplicates and saved templates work where crypto.randomUUID is missing (plain-HTTP LAN)", async ({
+  page,
+}) => {
+  // Browsers only offer crypto.randomUUID on HTTPS and localhost, not on http://<LAN IP>.
+  await page.addInitScript(() => {
+    delete (Crypto.prototype as { randomUUID?: unknown }).randomUUID;
+  });
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto("/");
+  expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe("undefined");
+  const count = async () => (await stored(page)).furniture.length,
+    before = await count();
+  await page.locator(".library-item").first().click();
+  await expect.poll(count).toBe(before + 1);
+  await page.getByRole("button", { name: "Nhân bản", exact: true }).click();
+  await expect.poll(count).toBe(before + 2);
+  const dialog = page.getByRole("dialog", { name: "Mẫu mặt bằng" });
+  await page.getByRole("button", { name: "Mẫu", exact: true }).click();
+  await dialog.getByLabel("Tên mẫu").fill("Mẫu qua LAN");
+  await dialog.getByRole("button", { name: "Lưu mẫu" }).click();
+  await expect(dialog.getByRole("status")).toContainText("Đã lưu mẫu “Mẫu qua LAN”");
+  const ids = await page.evaluate(() => [
+    ...JSON.parse(localStorage.getItem("interior-floorplan-v2")!).furniture.slice(-2).map((f: { id: string }) => f.id),
+    JSON.parse(localStorage.getItem("interior-floorplan-templates")!)[0].id,
+  ]);
+  for (const id of ids) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  expect(new Set(ids).size).toBe(3);
+  expect(errors).toEqual([]);
+});

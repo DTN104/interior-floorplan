@@ -31,6 +31,7 @@ import {
   removeOpening,
   setLayoutSettings,
   addOpening,
+  newPartition,
 } from "./layout";
 import {
   BUILTIN_TEMPLATES,
@@ -42,10 +43,11 @@ import {
   usableArea,
 } from "./templates";
 
+/** Runs a layout edit; false when it was refused (the error is shown), so fields can show the old value. */
 export type LayoutRun = (
   fn: () => LayoutResult,
   after?: (r: LayoutResult) => void,
-) => void;
+) => boolean;
 const sideNames: Record<Side, string> = {
   n: "trên",
   s: "dưới",
@@ -129,21 +131,22 @@ export function LayoutRoomSection({
     return `${rect ? "Cạnh " + sideNames[f.side] : `Cạnh ${i + 1} (${sideNames[f.side]})`} · ${f.s1 - f.s0} mm`;
   };
   const face = faces[Math.min(faceIndex, faces.length - 1)];
-  const addNext = () => {
-    const gap = wall ? settings.partition : 0,
-      r: Rect =
-        side === "e"
-          ? [b[2] + gap, b[1], b[2] + gap + w, b[1] + h]
-          : side === "w"
-            ? [b[0] - gap - w, b[1], b[0] - gap, b[1] + h]
-            : side === "s"
-              ? [b[0], b[3] + gap, b[0] + w, b[3] + gap + h]
-              : [b[0], b[1] - gap - h, b[0] + w, b[1] - gap];
+  const addNext = () =>
     run(
-      () => addRoom(p, r),
+      () => {
+        const gap = wall ? newPartition(settings) : 0,
+          r: Rect =
+            side === "e"
+              ? [b[2] + gap, b[1], b[2] + gap + w, b[1] + h]
+              : side === "w"
+                ? [b[0] - gap - w, b[1], b[0] - gap, b[1] + h]
+                : side === "s"
+                  ? [b[0], b[3] + gap, b[0] + w, b[3] + gap + h]
+                  : [b[0], b[1] - gap - h, b[0] + w, b[1] - gap];
+        return addRoom(p, r);
+      },
       (res) => onSelect(res.id!, "room"),
     );
-  };
   return (
     <>
       <section>

@@ -1,6 +1,7 @@
 // Plan templates: the original apartment, drawn sample plans and the user's own saved plans.
 import { Project, area, clone, defaultProject, importProject } from "./project";
 import { newLayoutProject, LayoutSpec } from "./layout";
+import { newId } from "./id";
 
 export type Template = {
   id: string;
@@ -12,7 +13,7 @@ export type Template = {
 };
 export type SavedTemplate = { id: string; name: string; savedAt: string; project: Project };
 export const TEMPLATE_STORAGE_KEY = "interior-floorplan-templates";
-/** Saved templates kept in the browser; the oldest is dropped past this count. */
+/** Readable templates kept in the browser; the oldest is dropped past this count. */
 export const MAX_SAVED_TEMPLATES = 20;
 
 const twoBedrooms: LayoutSpec = {
@@ -86,34 +87,63 @@ export const usableArea = (p: Project) =>
   p.geometry.rooms
     .filter((r) => r.counted !== false)
     .reduce((s, r) => s + area(r.poly), 0);
-/** Saved templates that still validate; unreadable entries are skipped, never thrown. */
-export function loadTemplates(
-  storage: Pick<Storage, "getItem"> = localStorage,
-): SavedTemplate[] {
+/** Where a stored template list that is not a JSON list is copied before a save replaces it. */
+export const UNREADABLE_TEMPLATES_KEY = "interior-floorplan-templates-unreadable";
+/** A stored entry as it is, and the template it holds when this version can read it. */
+type Entry = { raw: unknown; template: SavedTemplate | null };
+function readStored(storage: Pick<Storage, "getItem">): {
+  entries: Entry[];
+  /** Raw text that is not a JSON list (nothing in it can be kept in place). */
+  broken: string | null;
+} {
+  let raw: string | null;
   try {
-    const raw = JSON.parse(storage.getItem(TEMPLATE_STORAGE_KEY) ?? "[]");
-    if (!Array.isArray(raw)) return [];
-    return raw.flatMap((t: any) => {
+    raw = storage.getItem(TEMPLATE_STORAGE_KEY);
+  } catch {
+    return { entries: [], broken: null };
+  }
+  if (raw === null) return { entries: [], broken: null };
+  let list: unknown;
+  try {
+    list = JSON.parse(raw);
+  } catch {
+    return { entries: [], broken: raw };
+  }
+  if (!Array.isArray(list)) return { entries: [], broken: raw };
+  return {
+    entries: list.map((t: any) => {
       try {
-        if (typeof t?.id !== "string" || typeof t?.name !== "string") return [];
-        return [
-          {
+        if (typeof t?.id !== "string" || typeof t?.name !== "string") throw Error();
+        return {
+          raw: t,
+          template: {
             id: t.id,
             name: t.name.slice(0, 200),
             savedAt: String(t.savedAt ?? ""),
             project: importProject(t.project),
           },
-        ];
+        };
       } catch {
-        return [];
+        return { raw: t, template: null };
       }
-    });
-  } catch {
-    return [];
-  }
+    }),
+    broken: null,
+  };
 }
-function store(storage: Pick<Storage, "setItem">, list: SavedTemplate[]) {
+const readable = (entries: Entry[]) => entries.flatMap((e) => (e.template ? [e.template] : []));
+/** Saved templates that still validate; unreadable entries are skipped here but stay in storage. */
+export function loadTemplates(
+  storage: Pick<Storage, "getItem"> = localStorage,
+): SavedTemplate[] {
+  return readable(readStored(storage).entries);
+}
+/**
+ * Write the list. Entries this version cannot read are written back as they were (a newer version may
+ * read them); a list that is not JSON at all is copied to UNREADABLE_TEMPLATES_KEY first, as autosave does.
+ */
+function store(storage: Pick<Storage, "setItem">, broken: string | null, list: unknown[]) {
   try {
+    if (broken !== null) storage.setItem(UNREADABLE_TEMPLATES_KEY, broken);
     storage.setItem(TEMPLATE_STORAGE_KEY, JSON.stringify(list));
   } catch {
     throw Error("Trình duyệt không còn chỗ lưu mẫu. Hãy xóa bớt mẫu hoặc xuất JSON.");
@@ -131,25 +161,27 @@ export function saveTemplate(
   const snapshot = clone(project);
   snapshot.name = title;
   if (!withFurniture) snapshot.furniture = [];
-  const list = [
-    {
-      id: crypto.randomUUID(),
+  const saved: SavedTemplate = {
+      id: newId(),
       name: title,
       savedAt: new Date().toISOString(),
       project: importProject(JSON.parse(JSON.stringify(snapshot))),
     },
-    ...loadTemplates(storage),
-  ].slice(0, MAX_SAVED_TEMPLATES);
-  store(storage, list);
-  return list;
+    { entries, broken } = readStored(storage);
+  // The oldest readable templates past the limit are dropped; unreadable entries are kept.
+  let count = 1;
+  const kept = entries.filter((e) => !e.template || ++count <= MAX_SAVED_TEMPLATES);
+  store(storage, broken, [saved, ...kept.map((e) => e.raw)]);
+  return [saved, ...readable(kept)];
 }
 export function deleteTemplate(
   storage: Pick<Storage, "getItem" | "setItem">,
   id: string,
 ): SavedTemplate[] {
-  const list = loadTemplates(storage).filter((t) => t.id !== id);
-  store(storage, list);
-  return list;
+  const { entries, broken } = readStored(storage),
+    kept = entries.filter((e) => e.template?.id !== id);
+  store(storage, broken, kept.map((e) => e.raw));
+  return readable(kept);
 }
 /** A fresh, validated copy of a template's plan, named after the template. */
 export function instantiate(project: Project, name: string): Project {
