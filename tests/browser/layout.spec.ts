@@ -270,3 +270,33 @@ test("furniture, duplicates and saved templates work where crypto.randomUUID is 
   expect(new Set(ids).size).toBe(3);
   expect(errors).toEqual([]);
 });
+
+test("normal mode keeps drawn rooms at least 500 mm; furniture moves with its room in layout mode", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await useTemplate(page, "Căn 2 phòng ngủ");
+  const before = await stored(page);
+  await page.getByLabel("Chọn phòng", { exact: true }).selectOption("balcony");
+  const depth = page.getByLabel("Chiều sâu", { exact: true });
+  await depth.fill("300");
+  await depth.press("Enter");
+  await expect(page.locator(".resize-feedback-error")).toContainText("Ban công phải rộng và sâu ít nhất 500 mm.");
+  expect(await stored(page)).toEqual(before);
+  await page.keyboard.press("Escape");
+
+  await page.locator(".library-item").first().click();
+  await expect.poll(async () => (await stored(page)).furniture.length).toBe(1);
+  const item = (await stored(page)).furniture[0];
+  expect([item.cx, item.cy]).toEqual([1500, 8810]);
+
+  await page.getByRole("button", { name: "✎ Sửa mặt bằng" }).click();
+  await page.getByLabel("Chọn phòng", { exact: true }).selectOption("balcony");
+  const x = page.locator(".inspector").getByLabel("X", { exact: true });
+  await x.fill("500");
+  await x.press("Enter");
+  await expect.poll(async () => (await stored(page)).furniture[0].cx).toBe(2000);
+  const after = await stored(page);
+  expect(after.furniture[0].cy).toBe(8810);
+  expect(after.geometry.rooms.find((r: { id: string }) => r.id === "balcony").poly[0]).toEqual([500, 8210]);
+});

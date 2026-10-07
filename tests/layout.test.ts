@@ -35,6 +35,7 @@ import {
   labelPoint,
   pointIn,
   Point,
+  resizeRoom,
 } from "../src/project";
 import {
   BUILTIN_TEMPLATES,
@@ -596,6 +597,49 @@ describe("holes in the wall mass and room labels", () => {
         for (const r of p.geometry.rooms) expect(strictlyInside(r.poly, r.at!)).toBe(true);
       }
     expect(moved).toBeGreaterThan(5);
+  });
+});
+
+describe("room size floor in normal mode and furniture that follows its room", () => {
+  const blankPlan = () => BUILTIN_TEMPLATES[3].create(),
+    eastEdge = (p: Project, id = "r1") => {
+      const r = p.geometry.rooms.find((x) => x.id === id)!;
+      return r.poly.findIndex((a, i) => a[0] === bounds(r.poly)[2] && r.poly[(i + 1) % r.poly.length][0] === a[0]);
+    };
+  it("refuses normal-mode edits that shrink a drawn room below 500 mm, but lets a small room grow", () => {
+    const p = blankPlan();
+    expect(() => moveEdge(p, "r1", eastEdge(p), -3600)).toThrow("Phòng 1 phải rộng và sâu ít nhất 500 mm.");
+    expect(() => resizeRoom(p, "r1", 1, 400, "min")).toThrow("Phòng 1 phải rộng và sâu ít nhất 500 mm.");
+    const narrow = moveEdge(p, "r1", eastEdge(p), -3500).project;
+    expect(bounds(narrow.geometry.rooms[0].poly)).toEqual([0, 0, 500, 3000]);
+    // A room left below the floor (plans edited before the rule) can still be widened.
+    const legacy = { ...narrow, geometry: { ...narrow.geometry, layout: undefined } },
+      small = moveEdge(legacy, "r1", eastEdge(legacy), -200).project;
+    small.geometry.layout = narrow.geometry.layout;
+    expect(bounds(moveEdge(small, "r1", eastEdge(small), 100).project.geometry.rooms[0].poly)).toEqual([0, 0, 400, 3000]);
+    expect(() => moveEdge(small, "r1", eastEdge(small), -100)).toThrow("ít nhất 500 mm");
+    // The original apartment keeps its own rules.
+    expect(defaultProject().geometry.layout).toBeUndefined();
+  });
+  it("moves the furniture standing in a room with it, keeping wall fixings; resizing leaves it", () => {
+    const p = blankPlan(),
+      north = p.geometry.tracks.find((t) => t.axis === 1 && t.cross[1] === 0)!,
+      base = defaultProject().furniture[0];
+    p.furniture = [
+      { ...base, id: "in", cx: 2000, cy: 1500, w: 400, d: 400, placement: { roomId: "r1" } },
+      { ...base, id: "wall", cx: 1000, cy: 300, w: 400, d: 400, placement: { roomId: "r1", wallId: north.id } },
+      { ...base, id: "out", cx: 6000, cy: 1500, w: 400, d: 400 },
+    ];
+    const moved = moveRoom(roundTrip(p), "r1", 1000, -500).project,
+      at = (q: Project, id: string) => q.furniture.find((f) => f.id === id)!;
+    expect([at(moved, "in").cx, at(moved, "in").cy]).toEqual([3000, 1000]);
+    expect([at(moved, "wall").cx, at(moved, "wall").cy]).toEqual([2000, -200]);
+    expect([at(moved, "out").cx, at(moved, "out").cy]).toEqual([6000, 1500]);
+    const wall = moved.geometry.tracks.find((t) => t.id === at(moved, "wall").placement!.wallId)!;
+    expect([wall.axis, wall.cross]).toEqual([1, [-720, -500]]);
+    expect(roundTrip(moved)).toEqual(moved);
+    const resized = setRoomRect(moved, "r1", [1000, -500, 4000, 2500]).project;
+    expect(resized.furniture.map((f) => [f.cx, f.cy])).toEqual(moved.furniture.map((f) => [f.cx, f.cy]));
   });
 });
 

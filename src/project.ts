@@ -102,6 +102,8 @@ const signedArea = (p: Point[]) =>
     const q = p[(i + 1) % p.length];
     return a + v[0] * q[1] - q[0] * v[1];
   }, 0) / 2;
+/** Smallest width and depth of a room in a drawn plan (mm). */
+export const MIN_ROOM = 500;
 export const bounds = (p: Point[]) =>
   [
     Math.min(...p.map((v) => v[0])),
@@ -998,6 +1000,18 @@ export function moveEdge(
         if (axis === 0) f.cx += delta;
         else f.cy += delta;
       }
+  // Drawn plans keep every room at least MIN_ROOM wide and deep, like the layout editor; a room that is
+  // already smaller may still grow.
+  if (g.layout)
+    for (const id of affected) {
+      const now = bounds(g.rooms.find((r) => r.id === id)!.poly),
+        was = bounds(input.geometry.rooms.find((r) => r.id === id)!.poly);
+      for (const k of [0, 1] as const) {
+        const size = now[k + 2] - now[k];
+        if (size < MIN_ROOM && size < was[k + 2] - was[k])
+          throw Error(`${roomLabel(p, id)} phải rộng và sâu ít nhất ${MIN_ROOM} mm.`);
+      }
+    }
   refreshRoomLinks(g);
   validateGeometry(p);
   verifyTopology(g);

@@ -23,11 +23,12 @@ import {
   windowSpec,
   slabs,
   labelPoint,
+  MIN_ROOM,
 } from "./project";
 
 export const DEFAULT_LAYOUT: LayoutSettings = { exterior: 220, partition: 110 };
 /** Smallest room side, wall and opening the editor creates (mm). */
-export const MIN_ROOM = 500;
+export { MIN_ROOM };
 export const MIN_WALL = 50;
 export const MIN_OPENING = 300;
 /**
@@ -1026,20 +1027,50 @@ export function setRoomRect(p: Project, id: string, rect: Rect): LayoutResult {
   r.poly = rectPoly(next);
   return rebuild(s, p, s.rooms, followRoom(s.openings, id, old, next));
 }
-/** Translate any room with its doors and windows. */
+/** Translate any room with its doors, windows and the furniture standing in it. */
 export function moveRoom(p: Project, id: string, dx: number, dy: number): LayoutResult {
   dx = Math.round(dx);
   dy = Math.round(dy);
   const s = state(p),
     r = findRoom(s.rooms, id),
-    old = bounds(r.poly);
+    old = bounds(r.poly),
+    oldPoly = r.poly;
   r.poly = r.poly.map(([x, y]) => [x + dx, y + dy] as Point);
-  return rebuild(
+  // Furniture whose centre is in the room moves with it (resizing a room leaves furniture in place).
+  const carried = new Set(
+    dx || dy ? p.furniture.filter((f) => pointIn(oldPoly, [f.cx, f.cy])).map((f) => f.id) : [],
+  );
+  const res = rebuild(
     s,
-    p,
+    {
+      ...p,
+      furniture: p.furniture.map((f) =>
+        carried.has(f.id) ? { ...f, cx: f.cx + dx, cy: f.cy + dy } : f,
+      ),
+    },
     s.rooms,
     followRoom(s.openings, id, old, [old[0] + dx, old[1] + dy, old[2] + dx, old[3] + dy]),
   );
+  // A carried piece fixed to a wall stays on that wall at its new place.
+  for (const f of res.project.furniture) {
+    const was =
+      carried.has(f.id) && f.placement?.roomId === id
+        ? p.geometry.tracks.find((t) => t.id === p.furniture.find((x) => x.id === f.id)!.placement?.wallId)
+        : undefined;
+    if (!was) continue;
+    const c = was.axis === 0 ? dx : dy,
+      a = was.axis === 0 ? dy : dx,
+      now = res.project.geometry.tracks.find(
+        (t) =>
+          t.axis === was.axis &&
+          t.cross[0] < was.cross[1] + c &&
+          t.cross[1] > was.cross[0] + c &&
+          t.start < was.end + a &&
+          t.end > was.start + a,
+      );
+    f.placement = { roomId: id, ...(now ? { wallId: now.id } : {}) };
+  }
+  return res;
 }
 function followRoom(
   openings: LayoutOpening[],
