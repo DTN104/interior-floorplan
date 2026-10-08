@@ -67,6 +67,10 @@ Playwright tự khởi động Vite trên port 5174. Trong cloud, dùng Chromium
 
 Xem [IMPLEMENTATION.md](IMPLEMENTATION.md) để biết thiết kế geometry, bằng chứng giữ model và các giới hạn cụ thể.
 
+## Deploy lên Vercel
+
+App là trang tĩnh, không cần backend. `vercel.json` ghi cứng framework Vite, lệnh `npm run build` và thư mục `dist`, nên không phụ thuộc cài đặt trên dashboard (một project import khi nhánh chưa có `package.json` sẽ bị nhận là "Other" và không build). Domain production build từ **Production Branch** của project (mặc định `main`), vì vậy nhánh đó phải chứa app này; mỗi lần push nhánh khác có một link Preview riêng. Dữ liệu (phương án, mẫu) lưu trong trình duyệt theo từng domain; chuyển từ máy local bằng Xuất phương án / Nhập JSON.
+
 ## License
 
 Nguồn gốc MIT, copyright (c) 2026 wuyi. [LICENSE](LICENSE) và `legacy/index.html` được giữ nguyên. Các module được tách từ nguồn gốc giữ ghi chú copyright.
